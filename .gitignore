@@ -117,3 +117,7 @@ test_tipc/web/models/
 
 # EISeg
 EISeg/eiseg/config/setting.txt
+
+# Dataset
+data/
+optic_disc_seg
