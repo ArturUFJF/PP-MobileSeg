@@ -1,4 +1,5 @@
 batch_size: 4
+num_workers: 4  # ajuste conforme sua GPU
 iters: 8000
 
 train_dataset:

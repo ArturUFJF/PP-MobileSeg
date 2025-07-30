@@ -1,6 +1,7 @@
 _base_: '../_base_/dimensionamento_foliar.yml'
 
 batch_size: 4  # ajuste conforme sua GPU
+num_workers: 4  # ajuste conforme sua GPU
 iters: 8000
 
 train_dataset:
@@ -53,7 +54,7 @@ model:
   num_classes: 2  # fundo + folha
   backbone:
     type: MobileSeg_Base
-    inj_type: AAMSx8
+    #inj_type: AAMSx8 //Desativando VIM
     out_feat_chs: [64, 128, 192] 
     pretrained: https://bj.bcebos.com/paddleseg/dygraph/ade20k/pp_mobileseg/pretrain/model.pdparams
   upsample: intepolate
@@ -74,3 +75,5 @@ val_dataset_config:
   early_stop:
     patience: 1500
     min_improvement: 0.001
+
+
