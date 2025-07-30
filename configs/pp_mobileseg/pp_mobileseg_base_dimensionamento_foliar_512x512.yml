@@ -51,7 +51,7 @@ loss:
 
 model:
   type: PPMobileSeg
-  num_classes: 2  # fundo + folha
+  num_classes: 3  # fundo + folha + quadrado
   backbone:
     type: MobileSeg_Base
     #inj_type: AAMSx8 //Desativando VIM
