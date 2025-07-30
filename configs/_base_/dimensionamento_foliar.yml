@@ -1,0 +1,74 @@
+batch_size: 4
+iters: 8000
+
+train_dataset:
+  type: Dataset
+  dataset_root: data/dimensionamento_foliar
+  train_path: data/dimensionamento_foliar/train.txt
+  num_classes: 2
+  transforms:
+    - type: ResizeStepScaling
+      min_scale_factor: 0.5
+      max_scale_factor: 1.5
+      scale_step_size: 0.25
+    - type: RandomPaddingCrop
+      crop_size: [512, 512]
+    - type: RandomHorizontalFlip
+    - type: RandomDistort
+      brightness_range: 0.25
+      contrast_range: 0.25
+      saturation_range: 0.25
+    - type: Normalize
+  mode: train
+
+val_dataset:
+  type: Dataset
+  dataset_root: data/dimensionamento_foliar
+  val_path: data/dimensionamento_foliar/val.txt
+  num_classes: 2
+  transforms:
+    - type: Normalize
+  mode: val
+
+test_dataset:
+  type: Dataset
+  dataset_root: data/dimensionamento_foliar
+  test_path: data/dimensionamento_foliar/test.txt
+  num_classes: 2
+  transforms:
+    - type: Normalize
+  mode: test
+
+optimizer:
+  type: SGD
+  momentum: 0.9
+  weight_decay: 1.0e-4
+
+lr_scheduler:
+  type: PolynomialDecay
+  learning_rate: 0.004
+  end_lr: 0
+  power: 0.9
+
+loss:
+  types:
+    - type: CrossEntropyLoss
+  coef: [1]
+
+# Configurações de checkpoint
+checkpoint:
+  save_dir: output/dimensionamento_foliar
+  save_interval: 500
+  keep_checkpoint_max: 5
+
+# Configurações de logging
+log_config:
+  name: dimensionamento_foliar_training
+  interval: 50
+
+# Configurações de early stopping e validação
+val_dataset_config:
+  val_interval: 200
+  early_stop:
+    patience: 1500
+    min_improvement: 0.001
