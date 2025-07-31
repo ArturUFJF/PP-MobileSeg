@@ -121,3 +121,11 @@ EISeg/eiseg/config/setting.txt
 # Dataset
 data/
 optic_disc_seg
+
+data/
+dimensionamento_foliar
+
+# Outputs novos
+output/
+pp_mobile_seg_dimensionamento_foliar/
+predict_results
