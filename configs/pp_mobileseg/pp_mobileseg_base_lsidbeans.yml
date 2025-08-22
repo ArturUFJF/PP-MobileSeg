@@ -1,0 +1,79 @@
+_base_: '../_base_/lsidbeans.yml'
+
+batch_size: 4  # ajuste conforme sua GPU
+num_workers: 4  # ajuste conforme sua GPU
+iters: 8000
+
+train_dataset:
+  transforms:
+    - type: ResizeStepScaling
+      min_scale_factor: 0.5
+      max_scale_factor: 1.5
+      scale_step_size: 0.125
+    - type: RandomPaddingCrop
+      crop_size: [512, 512]  # ajustado para imagens menores
+    - type: RandomHorizontalFlip
+    - type: RandomVerticalFlip  # útil para folhas
+    - type: RandomDistort
+      brightness_range: 0.25
+      contrast_range: 0.25
+      saturation_range: 0.25
+    - type: Normalize
+
+optimizer:
+  _inherited_: False
+  type: AdamW
+  weight_decay: 0.001  # Reduzido para dataset pequeno
+  custom_cfg:
+  - name: pos_embed
+    weight_decay_mult: 0.0
+  - name: head
+    lr_multi: 10.0
+  - name: bn
+    weight_decay_mult: 0.0
+
+lr_scheduler:
+  type: PolynomialDecay
+  learning_rate: 0.0006
+  end_lr: 0
+  power: 1.0
+  warmup_iters: 1000
+  warmup_start_lr: 1.0e-6
+
+loss:
+  types:
+    - type: MixedLoss
+      losses:
+        - type: CrossEntropyLoss
+        - type: LovaszSoftmaxLoss
+      coef: [0.8, 0.2]
+  coef: [1]
+
+model:
+  type: PPMobileSeg
+  num_classes: 3  # fundo + folha + quadrado
+  backbone:
+    type: MobileSeg_Base
+    #inj_type: AAMSx8 //Desativando VIM
+    out_feat_chs: [64, 128, 192] 
+    pretrained: https://bj.bcebos.com/paddleseg/dygraph/ade20k/pp_mobileseg/pretrain/model.pdparams
+  upsample: intepolate
+
+# Configurações de checkpoint e logging
+checkpoint:
+  save_dir: output/lsidbeans
+  save_interval: 500
+  keep_checkpoint_max: 5
+
+log_config:
+  name: pp_mobileseg_lsidbeans
+  interval: 50
+
+# Configurações de early stopping e validação
+val_dataset_config:
+  val_interval: 200
+  early_stop:
+    patience: 1500
+    min_improvement: 0.001
+
+
