@@ -129,6 +129,24 @@ def merge_test_config(cfg, args):
         test_config['use_multilabel'] = args.use_multilabel
     return test_config
 
+def _apply_default_palette(test_cfg, model):
+    """
+    Injects a default palette if none was provided.
+    Uses: background black, class-1 orange, class-2 blue for 3-class models.
+    """
+    # nothing to do if user already provided a palette
+    if test_cfg.get('custom_color'):
+        return test_cfg
+
+    num_classes = getattr(model, 'num_classes', None)
+    if num_classes == 3:
+        palette = [0, 0, 0, 255, 0, 0, 0, 0, 255]  # [black, orange, blue]
+        updated = dict(test_cfg)
+        updated['custom_color'] = palette
+        logger.info('Applied default palette: class 1 -> orange (no custom_color provided).')
+        return updated
+
+    return test_cfg
 
 def main(args):
     assert args.config is not None, \
@@ -149,6 +167,8 @@ def main(args):
     transforms = Compose(builder.val_transforms)
     image_list, image_dir = get_image_list(args.image_path)
     logger.info('The number of images: {}'.format(len(image_list)))
+
+    test_config = _apply_default_palette(test_config, model)
 
     predict(
         model,
