@@ -121,7 +121,9 @@ def validate_polygon(coords, width, height):
     return True
 
 def process_xml_to_mask(xml_path, image_dir, output_mask_dir):
-    """Processa um arquivo XML e gera a mascara PNG correspondente"""
+    """Processa um arquivo XML e gera a mascara PNG correspondente
+    Retorna o nome do arquivo gravado (out_name) em caso de sucesso, ou False em caso de falha.
+    """
     filename = os.path.basename(xml_path)
 
     try:
@@ -177,7 +179,7 @@ def process_xml_to_mask(xml_path, image_dir, output_mask_dir):
     for leaf in leaf_elements:
         try:
             coords = extract_polygon_coords(leaf, width, height)
-            if len(coords[0]) > 2 and validate_polygon(coords, width, height):
+            if coords.size and len(coords[0]) > 2 and validate_polygon(coords, width, height):
                 cv2.fillPoly(mask, coords, color=1)
                 objects_processed += 1
             else:
@@ -190,7 +192,7 @@ def process_xml_to_mask(xml_path, image_dir, output_mask_dir):
     for square in square_elements:
         try:
             coords = extract_polygon_coords(square, width, height)
-            if len(coords[0]) > 2 and validate_polygon(coords, width, height):
+            if coords.size and len(coords[0]) > 2 and validate_polygon(coords, width, height):
                 cv2.fillPoly(mask, coords, color=2)
                 objects_processed += 1
             else:
@@ -201,6 +203,8 @@ def process_xml_to_mask(xml_path, image_dir, output_mask_dir):
     # Salva a máscara
     out_name = base_name + "_label.png"
     out_path = os.path.join(output_mask_dir, out_name)
+
+    # AVISO: se já existir, será sobrescrito — diagnosticamos no mapeamento externo
     cv2.imwrite(out_path, mask)
 
     print(f"OK {filename} -> {out_name} ({objects_processed} objetos)")
@@ -208,8 +212,8 @@ def process_xml_to_mask(xml_path, image_dir, output_mask_dir):
     if 2 not in np.unique(mask):
         print(f"AVISO: Classe 2 (quadrado) ausente na máscara de {out_name}")
 
-    return True
-
+    return out_name
+# ...existing code...
 
 # Processa todos os arquivos XML
 xml_files = [f for f in os.listdir(xml_dir) if f.endswith(".xml")]
@@ -218,17 +222,32 @@ print(f"Encontrados {len(xml_files)} arquivos XML")
 successful_conversions = 0
 failed_conversions = 0
 
+# Novo: mapeamento de out_name -> lista de xmls que geraram esse arquivo
+generated_map = {}
+
 for xml_filename in xml_files:
     xml_path = os.path.join(xml_dir, xml_filename)
-    if process_xml_to_mask(xml_path, image_dir, output_mask_dir):
+    result = process_xml_to_mask(xml_path, image_dir, output_mask_dir)
+    if result:
         successful_conversions += 1
+        generated_map.setdefault(result, []).append(xml_filename)
     else:
         failed_conversions += 1
 
 print(f"\n=== RESUMO DA CONVERSAO ===")
-print(f"OK Sucessos: {successful_conversions}")
+print(f"OK Sucessos (por XML): {successful_conversions}")
 print(f"X Falhas: {failed_conversions}")
 print(f"Pasta Mascaras salvas em: {output_mask_dir}")
+
+# Relatório de colisões (mesmo out_name gerado por vários XMLs)
+unique_outputs = len(generated_map)
+print(f"Arquivos de saída únicos: {unique_outputs}")
+collisions = {k: v for k, v in generated_map.items() if len(v) > 1}
+print(f"Colisões (out_name gerado por >1 XML): {len(collisions)}")
+if collisions:
+    print("\nExemplos de colisões:")
+    for out_name, xmls in list(collisions.items())[:50]:
+        print(f"  {out_name}: gerado por {len(xmls)} XMLs -> {xmls[:5]}{'...' if len(xmls)>5 else ''}")
 
 # Verifica as classes presentes nas máscaras geradas
 print(f"\n=== VERIFICACAO DAS CLASSES ===")
