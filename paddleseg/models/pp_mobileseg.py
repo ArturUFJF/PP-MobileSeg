@@ -150,11 +150,51 @@ class PPMobileSegHead(nn.Layer): #decoder aqui
         x = self.conv_seg(x)  # Logits por classe (B, num_classes, h, w)
         return x
     
+    
+class AreaSegHead(nn.Layer): #decoder aqui
+    # Cabeça simples de segmentação:
+    # - Um bloco Conv+BN+ReLU (linear_fuse) com kernel 1x1
+    #   Opcionalmente "depthwise" via groups=in_channels (opera canal a canal)
+    # - Dropout 2D
+    # - Convolução 1x1 final para produzir logits de num_classes
+    def __init__(self,
+                 num_classes,
+                 in_channels,
+                 use_dw=False,
+                 dropout_ratio=0.1,
+                 align_corners=False):
+        super().__init__()
+        self.align_corners = align_corners  # Não é usado diretamente aqui, mas mantido por consistência
+        self.last_channels = in_channels  # Número de canais das features do backbone
+
+        # Bloco de fusão linear:
+        # ConvBNAct com kernel 1x1. Se use_dw=True, usa groups=in_channels (convolução por canal),
+        # que é uma operação leve (sem mistura entre canais). Caso contrário, é conv 1x1 padrão.
+        self.linear_fuse = ConvBNAct(
+            in_channels=self.last_channels,
+            out_channels=self.last_channels,
+            kernel_size=1,
+            stride=1,
+            groups=self.last_channels if use_dw else 1,
+            act=nn.ReLU)
+        # Regularização para reduzir overfitting
+        self.dropout = nn.Dropout2D(dropout_ratio)
+        # Projeção final para o espaço de classes (logits por classe)
+        self.conv_seg = nn.Conv2D(
+            self.last_channels, num_classes, kernel_size=1)
+
+    def forward(self, x):
+        # x aqui é o mapa de features do backbone (espera-se tensor 4D)
+        x = self.linear_fuse(x)  # Ajuste/normalização das features com activação ReLU
+        x = self.dropout(x)  # Dropout espacial
+        x = self.conv_seg(x)  # Logits por classe (B, num_classes, h, w)
+        return x
+    
     #o novo decoder deve:
-    # 1) Calcular o tamanho real de cada pixel da classe leaf calculando a razão entre área real da folha e total de pixels da folha na máscara binária, extraindo informações dos xml
-    # 2) Calcular o tamanho real de cada pixel da classe square calculando a razão entre área real do quadrado e total de pixels da máscara binária do quadrado, levando em conta a estimativa de pose, extraindo informações dos xml
-    # 3) Retornar os logits com cada área calculada para cada pixel das folhas e quadrados
-    # 4) Realizar o Produto de Hadamard entre os logits e as máscaras binárias para obter as estimativas de área finais para cada classe
+    # 1 - Calcular o tamanho real de cada pixel da classe leaf calculando a razão entre área real da folha e total de pixels da folha na máscara binária, extraindo informações dos xml
+    # 2 - Calcular o tamanho real de cada pixel da classe square calculando a razão entre área real do quadrado e total de pixels da máscara binária do quadrado, levando em conta a estimativa de pose, extraindo informações dos xml
+    # 3 - Retornar os logits com cada área calculada para cada pixel das folhas e quadrados
+    # 4 - Realizar o Produto de Hadamard entre os logits e as máscaras binárias para obter as estimativas de área finais para cada classe
 
     #A nova loss function deve:
     # - Ser a soma da loss function MSE dos 2 decoders
