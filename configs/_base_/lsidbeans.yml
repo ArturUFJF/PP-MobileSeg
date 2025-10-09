@@ -7,7 +7,7 @@ train_dataset:
   dataset_root: data/lsidbeans
   train_path: data/lsidbeans/train.txt
   num_classes: 3
-  transforms:
+  transforms: #potencialmente ajustar 
     - type: ResizeStepScaling
       min_scale_factor: 0.5
       max_scale_factor: 1.5

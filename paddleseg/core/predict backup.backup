@@ -126,9 +126,6 @@ def predict(model,
             pred = paddle.squeeze(pred)
             pred = pred.numpy().astype('uint8')
 
-            mask_leaf = (pred == 1).astype('uint8') * 255 #aqui estão as máscaras binárias
-            mask_square = (pred == 2).astype('uint8') * 255
-
             # get the saved name
             if image_dir is not None:
                 im_file = im_path.replace(image_dir, '')
@@ -143,16 +140,6 @@ def predict(model,
             added_image_path = os.path.join(added_saved_dir, im_file)
             mkdir(added_image_path)
             cv2.imwrite(added_image_path, added_image)
-
-            binary_saved_dir = os.path.join(save_dir, 'binary_masks') #aqui, as máscaras binárias serão salvas pra teste
-            leaf_saved_path = os.path.join(
-                binary_saved_dir, os.path.splitext(im_file)[0] + "_leaf.png")
-            square_saved_path = os.path.join(
-                binary_saved_dir, os.path.splitext(im_file)[0] + "_square.png")
-            mkdir(leaf_saved_path)
-            mkdir(square_saved_path)
-            cv2.imwrite(leaf_saved_path, mask_leaf)
-            cv2.imwrite(square_saved_path, mask_square)
 
             # save pseudo color prediction
             pred_mask = utils.visualize.get_pseudo_color_map(

@@ -5,7 +5,7 @@ num_workers: 4  # ajuste conforme sua GPU
 iters: 12000
 
 train_dataset:
-  transforms:
+  transforms: #potencialmente ajustar
     - type: ResizeStepScaling
       min_scale_factor: 0.5
       max_scale_factor: 1.5
