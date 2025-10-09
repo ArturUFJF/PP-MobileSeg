@@ -149,3 +149,12 @@ class PPMobileSegHead(nn.Layer): #decoder aqui
         x = self.dropout(x)  # Dropout espacial
         x = self.conv_seg(x)  # Logits por classe (B, num_classes, h, w)
         return x
+    
+    #o novo decoder deve:
+    # 1) Calcular o tamanho real de cada pixel da classe leaf calculando a razão entre área real da folha e total de pixels da folha na máscara binária, extraindo informações dos xml
+    # 2) Calcular o tamanho real de cada pixel da classe square calculando a razão entre área real do quadrado e total de pixels da máscara binária do quadrado, levando em conta a estimativa de pose, extraindo informações dos xml
+    # 3) Retornar os logits com cada área calculada para cada pixel das folhas e quadrados
+    # 4) Realizar o Produto de Hadamard entre os logits e as máscaras binárias para obter as estimativas de área finais para cada classe
+
+    #A nova loss function deve:
+    # - Ser a soma da loss function MSE dos 2 decoders
