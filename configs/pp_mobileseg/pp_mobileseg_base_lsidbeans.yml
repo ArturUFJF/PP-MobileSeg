@@ -6,12 +6,12 @@ iters: 12000
 
 train_dataset:
   transforms: #potencialmente ajustar
-    - type: ResizeStepScaling
-      min_scale_factor: 0.5
-      max_scale_factor: 1.5
-      scale_step_size: 0.125
-    - type: RandomPaddingCrop
-      crop_size: [512, 512]  # ajustado para imagens menores
+    # - type: ResizeStepScaling
+    #   min_scale_factor: 0.5
+    #   max_scale_factor: 1.5
+    #   scale_step_size: 0.125
+    # - type: RandomPaddingCrop
+    #   crop_size: [512, 512]  # ajustado para imagens menores
     - type: RandomHorizontalFlip
     - type: RandomVerticalFlip  # útil para folhas
     - type: RandomDistort

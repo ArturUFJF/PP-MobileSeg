@@ -8,12 +8,12 @@ train_dataset:
   train_path: data/lsidbeans/train.txt
   num_classes: 3
   transforms: #potencialmente ajustar 
-    - type: ResizeStepScaling
-      min_scale_factor: 0.5
-      max_scale_factor: 1.5
-      scale_step_size: 0.25
-    - type: RandomPaddingCrop
-      crop_size: [512, 512]
+    # - type: ResizeStepScaling
+    #   min_scale_factor: 0.5
+    #   max_scale_factor: 1.5
+    #   scale_step_size: 0.25
+    # - type: RandomPaddingCrop
+    #   crop_size: [512, 512]
     - type: RandomHorizontalFlip
     - type: RandomDistort
       brightness_range: 0.25
