@@ -35,23 +35,30 @@ class MixedLoss(nn.Layer):
 
     def __init__(self, losses, coef):
         super(MixedLoss, self).__init__()
+        # Garante que o usuario passou colecoes iteraveis de perdas e pesos
         if not isinstance(losses, list):
             raise TypeError('`losses` must be a list!')
         if not isinstance(coef, list):
             raise TypeError('`coef` must be a list!')
         len_losses = len(losses)
         len_coef = len(coef)
+        # Evita configuracoes inconsistentes onde a quantidade de perdas nao bate com a de pesos
         if len_losses != len_coef:
             raise ValueError(
                 'The length of `losses` should equal to `coef`, but they are {} and {}.'
                 .format(len_losses, len_coef))
 
+        # Mantem referencias aos objetos de perda e seus pesos
         self.losses = losses
         self.coef = coef
 
     def forward(self, logits, labels):
+        # Lista final que acumula o valor ponderado de cada perda individual
+        # Mantemos separado em vez de somar aqui para permitir analise externa
         loss_list = []
+        # Itera sobre cada perda configurada, ponderando o valor final
         for i, loss in enumerate(self.losses):
             output = loss(logits, labels)
             loss_list.append(output * self.coef[i])
+        # Retorna os termos ja ponderados para que o chamador decida como agregar
         return loss_list
