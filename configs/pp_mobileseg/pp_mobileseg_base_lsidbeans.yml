@@ -42,11 +42,7 @@ lr_scheduler:
 
 loss:
   types:
-    - type: MixedLoss
-      losses:
-        - type: CrossEntropyLoss
-        - type: LovaszSoftmaxLoss
-      coef: [0.8, 0.2]
+    - type: MixedMSELoss
   coef: [1]
 
 model:

@@ -3,7 +3,7 @@ num_workers: 4  # ajuste conforme sua GPU
 iters: 12000
 
 train_dataset:
-  type: Dataset
+  type: LeafDataset
   dataset_root: data/lsidbeans
   train_path: data/lsidbeans/train.txt
   num_classes: 3
@@ -23,7 +23,7 @@ train_dataset:
   mode: train
 
 val_dataset:
-  type: Dataset
+  type: LeafDataset
   dataset_root: data/lsidbeans
   val_path: data/lsidbeans/val.txt
   num_classes: 3
@@ -32,7 +32,7 @@ val_dataset:
   mode: val
 
 test_dataset:
-  type: Dataset
+  type: LeafDataset
   dataset_root: data/lsidbeans
   test_path: data/lsidbeans/test.txt
   num_classes: 3
