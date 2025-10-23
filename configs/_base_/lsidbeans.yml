@@ -53,7 +53,7 @@ lr_scheduler:
 
 loss:
   types:
-    - type: CrossEntropyLoss
+    - type: MixedMSELoss
   coef: [1]
 
 # Configurações de checkpoint

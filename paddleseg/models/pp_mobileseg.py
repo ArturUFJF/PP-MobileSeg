@@ -40,6 +40,8 @@ class PPMobileSeg(nn.Layer):
         pretrained (str, opcional): Caminho/URL de pesos pré-treinados para carregar no modelo.
         upsample (str, opcional): Tipo de upsample. 'intepolate' (padrão) ou 'vim' para otimização.
                                  Obs.: 'intepolate' aqui é uma grafia mantida pelo código de origem.
+    area_num_classes (int, opcional): Número de canais previstos pela cabeça de área supervisionada.
+    area_head_use_dw (bool, opcional): Permite configurar depthwise apenas na cabeça de área.
     """
 
     def __init__(self,
@@ -48,7 +50,9 @@ class PPMobileSeg(nn.Layer):
                  head_use_dw=True,
                  align_corners=False,
                  pretrained=None,
-                 upsample='intepolate'):
+                 upsample='intepolate',
+                 area_num_classes=None,
+                 area_head_use_dw=None):
         super().__init__()
         # Guarda referências e hiperparâmetros
         self.backbone = backbone  # Backbone deve retornar um mapa de features compatível com a cabeça
@@ -63,6 +67,16 @@ class PPMobileSeg(nn.Layer):
             use_dw=head_use_dw,
             align_corners=align_corners)
 
+        # Cabeça opcional para a máscara de área supervisionada.
+        self.area_head = None
+        if area_num_classes is not None:
+            use_dw_area = head_use_dw if area_head_use_dw is None else area_head_use_dw
+            self.area_head = AreaSegHead(
+                num_classes=area_num_classes,
+                in_channels=backbone.feat_channels[0],
+                use_dw=use_dw_area,
+                align_corners=align_corners)
+
         self.align_corners = align_corners  # Propagado para F.interpolate
         self.pretrained = pretrained  # Caminho/URL de pesos pré-treinados
         self.init_weight()  # Carrega pesos, se informados
@@ -72,43 +86,62 @@ class PPMobileSeg(nn.Layer):
         if self.pretrained is not None:
             utils.load_entire_model(self, self.pretrained)
 
+    def _upsample_segmentation(self, logits, target_hw):
+        """Aplica a estratégia de upsample original para a cabeça principal."""
+        if logits is None:
+            return None
+
+        if self.upsample == 'intepolate' or self.training or self.num_classes < 30:
+            return F.interpolate(
+                logits, target_hw, mode='bilinear', align_corners=self.align_corners)
+
+        if self.upsample == 'vim':
+            labelset = paddle.unique(paddle.argmax(logits, 1))
+            reduced = paddle.gather(logits, labelset, axis=1)
+            reduced = F.interpolate(
+                reduced, target_hw, mode='bilinear', align_corners=self.align_corners)
+
+            pred = paddle.argmax(reduced, 1)
+            pred_retrieve = paddle.zeros(pred.shape, dtype='int32')
+            for i, val in enumerate(labelset):
+                pred_retrieve[pred == i] = labelset[i].cast('int32')
+            return pred_retrieve
+
+        raise NotImplementedError(self.upsample, " is not implemented")
+
     def forward(self, x):
         # x: tensor de entrada (B, C, H, W)
         x_hw = x.shape[2:]  # Guarda a resolução original para upsample posterior
-        x = self.backbone(x)  # Extrai features com o backbone
-        x = self.decode_head(x)  # Converte features em logits por classe (B, num_classes, h, w)
+        feats = self.backbone(x)  # Extrai features com o backbone
+        seg_logits = self.decode_head(feats)  # Logits por classe (B, num_classes, h, w)
 
-        # Estratégia de upsample:
-        # - Durante treino (self.training == True), sempre usa interpolate bilinear.
-        # - Também usa interpolate se upsample == 'intepolate' (padrão) ou num_classes < 30 (heurística).
-        if self.upsample == 'intepolate' or self.training or self.num_classes < 30:
-            x = F.interpolate(
-                x, x_hw, mode='bilinear', align_corners=self.align_corners)
-        elif self.upsample == 'vim':
-            # Modo VIM: otimização para reduzir custo de memória/cálculo na interpolação
-            # 1) Obtém o conjunto de rótulos presentes no mapa de predição de baixa resolução
-            labelset = paddle.unique(paddle.argmax(x, 1))  # shape: (K,), K = nº de classes presentes
-            # 2) Mantém apenas os canais das classes presentes (reduzindo de C para K)
-            x = paddle.gather(x, labelset, axis=1)
-            # 3) Faz o upsample apenas nesses K canais
-            x = F.interpolate(
-                x, x_hw, mode='bilinear', align_corners=self.align_corners)
+        area_logits = None
+        hadamard_logits = None
+        if self.area_head is not None:
+            area_logits = self.area_head(feats)
+            if area_logits.shape[1] not in (1, seg_logits.shape[1]):
+                raise ValueError(
+                    "`area_head` deve gerar 1 canal ou o mesmo número de canais da cabeça principal.")
+            # Produto de Hadamard (element-wise) entre as duas previsões.
+            hadamard_logits = seg_logits * area_logits
 
-            # 4) Reconstroi as classes originais: argmax nos K canais e remapeia para índices verdadeiros
-            pred = paddle.argmax(x, 1)  # mapa (B, H, W) com índices 0..K-1
-            pred_retrieve = paddle.zeros(pred.shape, dtype='int32')
-            for i, val in enumerate(labelset):
-                # Para cada índice reduzido i, mapeia de volta para o rótulo global labelset[i]
-                pred_retrieve[pred == i] = labelset[i].cast('int32')
+        seg_out = self._upsample_segmentation(seg_logits, x_hw)
 
-            # No modo VIM, a saída final é o mapa de rótulos inteiros (sem logits)
-            x = pred_retrieve
-        else:
-            # Caso seja passado um modo de upsample não implementado
-            raise NotImplementedError(self.upsample, " is not implemented")
+        outputs = [seg_out]
+        if area_logits is not None:
+            area_out = F.interpolate(
+                area_logits,
+                x_hw,
+                mode='bilinear',
+                align_corners=self.align_corners)
+            hadamard_out = F.interpolate(
+                hadamard_logits,
+                x_hw,
+                mode='bilinear',
+                align_corners=self.align_corners)
+            outputs.extend([area_out, hadamard_out])
 
-        # Retorno como lista, seguindo a convenção do PaddleSeg (permite múltiplas saídas)
-        return [x]
+        return outputs
 
 
 class PPMobileSegHead(nn.Layer): #decoder aqui
@@ -190,11 +223,4 @@ class AreaSegHead(nn.Layer): #decoder aqui
         x = self.conv_seg(x)  # Logits por classe (B, num_classes, h, w)
         return x
     
-    #o novo decoder deve:
-    # 1 - Calcular o tamanho real de cada pixel da classe leaf calculando a razão entre área real da folha e total de pixels da folha na máscara binária, extraindo informações dos xml
-    # 2 - Calcular o tamanho real de cada pixel da classe square calculando a razão entre área real do quadrado e total de pixels da máscara binária do quadrado, levando em conta a estimativa de pose, extraindo informações dos xml
-    # 3 - Retornar os logits com cada área calculada para cada pixel das folhas e quadrados
-    # 4 - Realizar o Produto de Hadamard entre os logits e as máscaras binárias para obter as estimativas de área finais para cada classe
-
-    #A nova loss function deve:
-    # - Ser a soma da loss function MSE dos 2 decoders
+    #realizar o Produto de Hadamard entre o mapa de predição e o mapa de área supervisionada

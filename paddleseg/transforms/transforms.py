@@ -88,6 +88,15 @@ class Compose:
             elif data['label'].shape[1] != img_w:
                 data['label'] = data['label'].reshape([img_h, -1, img_w]).transpose([0, 2, 1])
 
+        if 'areaLabel' in data.keys() and isinstance(data['areaLabel'], str):
+            # Area supervision shares the same spatial resolution as the semantic label.
+            data['areaLabel'] = np.asarray(Image.open(data['areaLabel']))
+            img_h, img_w = data['img'].shape[:2]
+            if data['areaLabel'].shape[0] != img_h:
+                data['areaLabel'] = data['areaLabel'].reshape([-1, img_h, img_w]).transpose([1, 2, 0])
+            elif data['areaLabel'].shape[1] != img_w:
+                data['areaLabel'] = data['areaLabel'].reshape([img_h, -1, img_w]).transpose([0, 2, 1])
+
         # the `trans_info` will save the process of image shape, and will be used in evaluation and prediction.
         if 'trans_info' not in data.keys():
             data['trans_info'] = []

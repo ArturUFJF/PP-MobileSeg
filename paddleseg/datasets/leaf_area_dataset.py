@@ -35,8 +35,8 @@ class LeafDataset(paddle.io.Dataset):
         mode (str, optional): which part of dataset to use. it is one of ('train', 'val', 'test'). Default: 'train'.
         train_path (str, optional): The train dataset file. When mode is 'train', train_path is necessary.
             The contents of train_path file are as follow:
-            image1.jpg ground_truth1.png
-            image2.jpg ground_truth2.png
+            image1.jpg ground_truth1.png areaLabel1.png
+            image2.jpg ground_truth2.png areaLabel2.png
         val_path (str. optional): The evaluation dataset file. When mode is 'val', val_path is necessary.
             The contents is the same as train_path
         test_path (str, optional): The test dataset file. When mode is 'test', test_path is necessary.
@@ -55,7 +55,7 @@ class LeafDataset(paddle.io.Dataset):
             num_classes = 2
             dataset = Dataset(transforms = transforms,
                               dataset_root = dataset_root,
-                              num_classes = 2,
+                              num_classes = num_classes,
                               train_path = train_path,
                               mode = 'train')
 
@@ -137,26 +137,29 @@ class LeafDataset(paddle.io.Dataset):
         with open(file_path, 'r') as f:
             for line in f:
                 items = line.strip().split(separator)
-                if len(items) != 2:
+                if len(items) != 3:
                     if self.mode == 'train' or self.mode == 'val':
                         raise ValueError(
                             "File list format incorrect! In training or evaluation task it should be"
                             " image_name{}label_name\\n".format(separator))
                     image_path = os.path.join(self.dataset_root, items[0])
                     label_path = None
+                    areaLabel_path = None
                 else:
                     image_path = os.path.join(self.dataset_root, items[0])
                     label_path = os.path.join(self.dataset_root, items[1])
+                    areaLabel_path = os.path.join(self.dataset_root, items[2])
                 # Cada entrada fica guardada para acesso rapido no __getitem__
-                self.file_list.append([image_path, label_path])
+                self.file_list.append([image_path, label_path, areaLabel_path])
 
     def __getitem__(self, idx):
         # Dicionario com tudo que os transforms esperam receber
         data = {}
         data['trans_info'] = []
-        image_path, label_path = self.file_list[idx]
+        image_path, label_path, areaLabel_path = self.file_list[idx]
         data['img'] = image_path
         data['label'] = label_path
+        data['areaLabel'] = areaLabel_path
         # If key in gt_fields, the data[key] have transforms synchronous.
         data['gt_fields'] = []
         if self.mode == 'val':
@@ -164,21 +167,29 @@ class LeafDataset(paddle.io.Dataset):
             data = self.transforms(data)
             if data['label'].ndim == 2:
                 data['label'] = data['label'][np.newaxis, :, :]
+            if data['areaLabel'].ndim == 2:
+                data['areaLabel'] = data['areaLabel'][np.newaxis, :, :]
 
         else:
             # Em treino/teste sincroniza transformacoes de imagem e mascara
             data['gt_fields'].append('label')
+            data['gt_fields'].append('areaLabel')
             data = self.transforms(data)
             if self.edge:
                 # Gera um mapa de borda opcional para supervisionar contornos
                 edge_mask = F.mask_to_binary_edge(
                     data['label'], radius=2, num_classes=self.num_classes)
+                area_edge_mask = F.mask_to_binary_edge(
+                    data['areaLabel'], radius=2, num_classes=self.num_classes)
                 data['edge'] = edge_mask
+                data['areaEdge'] = area_edge_mask
             elif 'edge' in data:  # for AddEdgeLabel
                 # F.mask_to_binary_edge is so slow
                 # AddEdgeLabel will faster
                 # But offline generation of edges might be better
                 data['edge'][data['edge'] == self.ignore_index] = 0
+                data['areaEdge'][data['areaEdge'] == self.ignore_index] = 0
+
         return data
 
     def __len__(self):
