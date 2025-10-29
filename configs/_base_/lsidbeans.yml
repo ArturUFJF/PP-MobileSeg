@@ -1,6 +1,6 @@
 batch_size: 4
 num_workers: 4  # ajuste conforme sua GPU
-iters: 1000
+iters: 12000
 
 train_dataset:
   type: LeafDataset
