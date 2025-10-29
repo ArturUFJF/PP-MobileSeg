@@ -15,6 +15,7 @@
 import random
 import math
 
+import os
 import cv2
 import numpy as np
 from PIL import Image
@@ -90,8 +91,69 @@ class Compose:
 
         if 'areaLabel' in data.keys() and isinstance(data['areaLabel'], str):
             # Area supervision shares the same spatial resolution as the semantic label.
-            data['areaLabel'] = np.asarray(Image.open(data['areaLabel']))
+            p = data['areaLabel']
             img_h, img_w = data['img'].shape[:2]
+            arr = None
+            # Try PIL first (handles png/jpg/tiff etc.)
+            try:
+                arr = np.asarray(Image.open(p))
+            except Exception:
+                # Fallback: try a few binary interpretations (headerless raw) and cv2
+                try:
+                    # Prefer common small dtypes first. For 4-byte-per-pixel files
+                    # try float32 before uint32 (many of our .raw files are float32)
+                    tried = []
+                    for dtype in (np.uint8, np.uint16, np.float32, np.uint32):
+                        raw = np.fromfile(p, dtype=dtype)
+                        tried.append((dtype.__name__, raw.size))
+                        if raw.size == img_h * img_w:
+                            arr = raw.reshape((img_h, img_w))
+                            break
+
+                    if arr is None:
+                        # Try cv2 last (in case file is an encoded image)
+                        tmp = cv2.imread(p, cv2.IMREAD_UNCHANGED)
+                        if tmp is None:
+                            # Build informative error message with file size and tried lengths
+                            fsize = os.path.getsize(p)
+                            tried_str = ", ".join([f"{n}={s}" for n, s in tried])
+                            raise ValueError(
+                                f"Cannot read areaLabel file {p}: file_size={fsize}, expected_pixels={img_h*img_w}, tried_lengths={tried_str}")
+                        arr = tmp
+                except Exception as e:
+                    raise ValueError(f"Failed to load areaLabel '{p}': {e}")
+
+            # Normalize dtype to types supported by Paddle's tensor.set
+            if arr is not None:
+                # If multi-channel image from cv2, keep as-is (handled below)
+                if np.issubdtype(arr.dtype, np.integer):
+                    # Prefer smaller unsigned types when possible (uint8/uint16)
+                    try:
+                        minv = int(arr.min())
+                        maxv = int(arr.max())
+                    except Exception:
+                        minv = 0
+                        maxv = 0
+
+                    # If values fit in uint8, cast to uint8
+                    if minv >= 0 and maxv <= 255:
+                        arr = arr.astype(np.uint8)
+                    # Else if fit in uint16, cast to uint16
+                    elif minv >= 0 and maxv <= 65535:
+                        arr = arr.astype(np.uint16)
+                    else:
+                        # Fall back to int32 for large integers
+                        arr = arr.astype(np.int32)
+
+                elif np.issubdtype(arr.dtype, np.floating):
+                    # Ensure floats are float32
+                    if arr.dtype != np.float32:
+                        arr = arr.astype(np.float32)
+
+            data['areaLabel'] = arr
+            # Ensure shape matches image (handle flat/raw shapes)
+            if data['areaLabel'].ndim == 3 and data['areaLabel'].shape[2] == 1:
+                data['areaLabel'] = data['areaLabel'][:, :, 0]
             if data['areaLabel'].shape[0] != img_h:
                 data['areaLabel'] = data['areaLabel'].reshape([-1, img_h, img_w]).transpose([1, 2, 0])
             elif data['areaLabel'].shape[1] != img_w:

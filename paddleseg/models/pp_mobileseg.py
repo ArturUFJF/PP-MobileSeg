@@ -165,12 +165,41 @@ class PPMobileSeg(nn.Layer):
         masked_square_labels = area_labels.clone()
         masked_square_labels[~square_mask] = ignore_index
 
-        # Area loss function (we reuse losses['types'][1] for both)
-        area_loss_fn = losses['types'][1]
-        leaf_loss = area_loss_fn(area_logits, masked_leaf_labels)
-        square_loss = area_loss_fn(area_logits, masked_square_labels)
+        # Area loss: compute masked MSE manually (ignore pixels == ignore_index)
+        # area_logits may have multiple channels; use the first channel as scalar prediction
+        # Ensure tensors are float32 for subtraction
+        area_pred = area_logits
+        # If area_pred has multiple channels, reduce to one channel (mean or first)
+        if area_pred.ndim == 4 and area_pred.shape[1] > 1:
+            # take first channel as the scalar area prediction
+            area_pred = area_pred[:, :1, :, :]
 
-        # Sum area losses and apply coefficient
+        # Prepare masked labels as float32 and add channel dim to match area_pred
+        masked_leaf = paddle.cast(masked_leaf_labels, 'float32')
+        masked_square = paddle.cast(masked_square_labels, 'float32')
+        if masked_leaf.ndim == 3:
+            masked_leaf = paddle.unsqueeze(masked_leaf, axis=1)
+        if masked_square.ndim == 3:
+            masked_square = paddle.unsqueeze(masked_square, axis=1)
+
+        # Create valid pixel masks (1.0 for valid, 0.0 for ignore_index)
+        valid_leaf = paddle.cast(masked_leaf != ignore_index, 'float32')
+        valid_square = paddle.cast(masked_square != ignore_index, 'float32')
+
+        # Compute masked MSE: sum((pred - target)^2 * valid) / (sum(valid) + eps)
+        eps = 1e-6
+        # leaf
+        diff_leaf = area_pred - masked_leaf
+        sq_leaf = paddle.square(diff_leaf) * valid_leaf
+        denom_leaf = paddle.sum(valid_leaf)
+        leaf_loss = paddle.sum(sq_leaf) / (denom_leaf + eps)
+        # square
+        diff_square = area_pred - masked_square
+        sq_square = paddle.square(diff_square) * valid_square
+        denom_square = paddle.sum(valid_square)
+        square_loss = paddle.sum(sq_square) / (denom_square + eps)
+
+        # If there are no valid pixels for a mask, its loss will be near 0 due to eps.
         area_loss = (leaf_loss + square_loss) * coef_area
 
         return [seg_loss, area_loss]

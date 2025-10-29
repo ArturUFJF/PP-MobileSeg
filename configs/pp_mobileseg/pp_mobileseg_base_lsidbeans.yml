@@ -2,7 +2,7 @@ _base_: '../_base_/lsidbeans.yml'
 
 batch_size: 4  # ajuste conforme sua GPU
 num_workers: 4  # ajuste conforme sua GPU
-iters: 12000
+iters: 1000
 
 train_dataset:
   transforms: #potencialmente ajustar
