@@ -42,8 +42,11 @@ lr_scheduler:
 
 loss:
   types:
-    - type: MixedMSELoss
-  coef: [1]
+    - !CrossEntropyLoss
+      ignore_index: 255
+    - !CrossEntropyLoss
+      ignore_index: 255
+  coef: [1.0, 1.0]  # coeficiente para seg_loss e area_loss
 
 model:
   type: PPMobileSeg

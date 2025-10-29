@@ -53,8 +53,11 @@ lr_scheduler:
 
 loss:
   types:
-    - type: MixedMSELoss
-  coef: [1]
+    - !CrossEntropyLoss
+      ignore_index: 0
+    - !CrossEntropyLoss
+      ignore_index: 0
+  coef: [1.0, 1.0]  # coeficiente para seg_loss e area_loss
 
 # Configurações de checkpoint
 checkpoint:

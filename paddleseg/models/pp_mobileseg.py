@@ -40,8 +40,6 @@ class PPMobileSeg(nn.Layer):
         pretrained (str, opcional): Caminho/URL de pesos pré-treinados para carregar no modelo.
         upsample (str, opcional): Tipo de upsample. 'intepolate' (padrão) ou 'vim' para otimização.
                                  Obs.: 'intepolate' aqui é uma grafia mantida pelo código de origem.
-    area_num_classes (int, opcional): Número de canais previstos pela cabeça de área supervisionada.
-    area_head_use_dw (bool, opcional): Permite configurar depthwise apenas na cabeça de área.
     """
 
     def __init__(self,
@@ -50,9 +48,7 @@ class PPMobileSeg(nn.Layer):
                  head_use_dw=True,
                  align_corners=False,
                  pretrained=None,
-                 upsample='intepolate',
-                 area_num_classes=None,
-                 area_head_use_dw=None):
+                 upsample='intepolate'):
         super().__init__()
         # Guarda referências e hiperparâmetros
         self.backbone = backbone  # Backbone deve retornar um mapa de features compatível com a cabeça
@@ -66,16 +62,12 @@ class PPMobileSeg(nn.Layer):
             in_channels=backbone.feat_channels[0],
             use_dw=head_use_dw,
             align_corners=align_corners)
-
-        # Cabeça opcional para a máscara de área supervisionada.
-        self.area_head = None
-        if area_num_classes is not None:
-            use_dw_area = head_use_dw if area_head_use_dw is None else area_head_use_dw
-            self.area_head = AreaSegHead(
-                num_classes=area_num_classes,
-                in_channels=backbone.feat_channels[0],
-                use_dw=use_dw_area,
-                align_corners=align_corners)
+        
+        self.area_head = AreaSegHead(
+            num_classes=num_classes,  
+            in_channels=backbone.feat_channels[0],
+            use_dw=head_use_dw,
+            align_corners=align_corners)
 
         self.align_corners = align_corners  # Propagado para F.interpolate
         self.pretrained = pretrained  # Caminho/URL de pesos pré-treinados
@@ -86,62 +78,27 @@ class PPMobileSeg(nn.Layer):
         if self.pretrained is not None:
             utils.load_entire_model(self, self.pretrained)
 
-    def _upsample_segmentation(self, logits, target_hw):
-        """Aplica a estratégia de upsample original para a cabeça principal."""
-        if logits is None:
-            return None
-
-        if self.upsample == 'intepolate' or self.training or self.num_classes < 30:
-            return F.interpolate(
-                logits, target_hw, mode='bilinear', align_corners=self.align_corners)
-
-        if self.upsample == 'vim':
-            labelset = paddle.unique(paddle.argmax(logits, 1))
-            reduced = paddle.gather(logits, labelset, axis=1)
-            reduced = F.interpolate(
-                reduced, target_hw, mode='bilinear', align_corners=self.align_corners)
-
-            pred = paddle.argmax(reduced, 1)
-            pred_retrieve = paddle.zeros(pred.shape, dtype='int32')
-            for i, val in enumerate(labelset):
-                pred_retrieve[pred == i] = labelset[i].cast('int32')
-            return pred_retrieve
-
-        raise NotImplementedError(self.upsample, " is not implemented")
-
     def forward(self, x):
         # x: tensor de entrada (B, C, H, W)
         x_hw = x.shape[2:]  # Guarda a resolução original para upsample posterior
-        feats = self.backbone(x)  # Extrai features com o backbone
-        seg_logits = self.decode_head(feats)  # Logits por classe (B, num_classes, h, w)
+        x = self.backbone(x)  # Extrai features com o backbone
+        seg_logits = self.decode_head(x)  # Converte features em logits por classe (B, num_classes, h, w)
+        area_logits = self.area_head(x)  # Converte features em logits por classe (B, num_classes, h, w)
 
-        area_logits = None
-        hadamard_logits = None
-        if self.area_head is not None:
-            area_logits = self.area_head(feats)
-            if area_logits.shape[1] not in (1, seg_logits.shape[1]):
-                raise ValueError(
-                    "`area_head` deve gerar 1 canal ou o mesmo número de canais da cabeça principal.")
-            # Produto de Hadamard (element-wise) entre as duas previsões.
-            hadamard_logits = seg_logits * area_logits
+        # Estratégia de upsample:
+        # - Durante treino (self.training == True), sempre usa interpolate bilinear.
+        # - Também usa interpolate se upsample == 'intepolate' (padrão) ou num_classes < 30 (heurística).
+        if self.upsample == 'intepolate' or self.training or self.num_classes < 30:
+            seg_logits = F.interpolate(
+                seg_logits, x_hw, mode='bilinear', align_corners=self.align_corners)
+            area_logits = F.interpolate(
+                area_logits, x_hw, mode='bilinear', align_corners=self.align_corners)
+        else:
+            # Caso seja passado um modo de upsample não implementado
+            raise NotImplementedError(self.upsample, " is not implemented")
 
-        seg_out = self._upsample_segmentation(seg_logits, x_hw)
-
-        outputs = [seg_out]
-        if area_logits is not None:
-            area_out = F.interpolate(
-                area_logits,
-                x_hw,
-                mode='bilinear',
-                align_corners=self.align_corners)
-            hadamard_out = F.interpolate(
-                hadamard_logits,
-                x_hw,
-                mode='bilinear',
-                align_corners=self.align_corners)
-            outputs.extend([area_out, hadamard_out])
-
-        return outputs
+        # Retorno como lista, seguindo a convenção do PaddleSeg (permite múltiplas saídas)
+        return [seg_logits, area_logits]
 
 
 class PPMobileSegHead(nn.Layer): #decoder aqui
@@ -223,4 +180,59 @@ class AreaSegHead(nn.Layer): #decoder aqui
         x = self.conv_seg(x)  # Logits por classe (B, num_classes, h, w)
         return x
     
-    #realizar o Produto de Hadamard entre o mapa de predição e o mapa de área supervisionada
+    #Lembrar do produto de Hadamard
+
+
+def loss_computation(self, logits_list, losses, data):
+    """
+    logits_list: list de logits produzidos pelo forward (espera-se [seg_logits, area_logits])
+    losses: dict contendo 'types' (lista de loss objects) e 'coef' (lista de coeficientes)
+    data: dicionário do dataset contendo pelo menos 'label' e 'areaLabel'
+    Retorna: lista de perdas ponderadas (cada item já multiplicado pelo coef)
+    """
+    # Garantir a consistência da entrada
+    if not isinstance(logits_list, (list, tuple)):
+        raise RuntimeError("logits_list deve ser list/tuple com duas entradas (seg, area)")
+
+    if len(logits_list) != len(losses['types']):
+        # A checagem do train.py também verifica, mas é útil explicitar
+        raise RuntimeError(f"Comprimento de logits_list ({len(logits_list)}) != número de loss types ({len(losses['types'])})")
+
+    # Extrair rótulos do dicionário (e converter para int64, remover eixo channel singleton se precisar)
+    labels = data.get('label', None)
+    area_labels = data.get('areaLabel', None)
+
+    if labels is None or area_labels is None:
+        raise RuntimeError("data deve conter 'label' e 'areaLabel' para calcular as perdas")
+
+    # squeeze se tiver shape (N,1,H,W)
+    if labels.ndim == 4 and labels.shape[1] == 1:
+        labels = paddle.squeeze(labels, axis=1)
+    if area_labels.ndim == 4 and area_labels.shape[1] == 1:
+        area_labels = paddle.squeeze(area_labels, axis=1)
+
+    labels = labels.astype('int64')
+    area_labels = area_labels.astype('int64')
+
+    loss_list = []
+    # para cada logit, calcular a loss correspondente.
+    # espera-se que losses['types'] esteja alinhado com a ordem de logits_list.
+    for i, logits in enumerate(logits_list):
+        loss_fn = losses['types'][i]
+        coef = losses['coef'][i] if 'coef' in losses and len(losses['coef']) > i else 1.0
+
+        # Assumimos: index 0 -> segmentation (usa labels), index 1 -> area (usa area_labels)
+        if i == 0:
+            tgt = labels
+        elif i == 1:
+            tgt = area_labels
+        else:
+            # caso você tenha mais cabeças, por enquanto usamos labels por padrão
+            tgt = labels
+
+        # Algumas losses específicas podem esperar edges ou outro formato; aqui tratamos o caso comum:
+        # loss_fn espera (logits, labels)
+        loss_val = loss_fn(logits, tgt)
+        loss_list.append(coef * loss_val)
+
+    return loss_list

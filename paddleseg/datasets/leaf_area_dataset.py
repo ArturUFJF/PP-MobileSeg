@@ -35,8 +35,8 @@ class LeafDataset(paddle.io.Dataset):
         mode (str, optional): which part of dataset to use. it is one of ('train', 'val', 'test'). Default: 'train'.
         train_path (str, optional): The train dataset file. When mode is 'train', train_path is necessary.
             The contents of train_path file are as follow:
-            image1.jpg ground_truth1.png areaLabel1.png
-            image2.jpg ground_truth2.png areaLabel2.png
+            image1.jpg ground_truth1.png areaLabel1.raw
+            image2.jpg ground_truth2.png areaLabel2.raw
         val_path (str. optional): The evaluation dataset file. When mode is 'val', val_path is necessary.
             The contents is the same as train_path
         test_path (str, optional): The test dataset file. When mode is 'test', test_path is necessary.
