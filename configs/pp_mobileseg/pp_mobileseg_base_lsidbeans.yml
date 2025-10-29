@@ -42,10 +42,13 @@ lr_scheduler:
 
 loss:
   types:
-    - !CrossEntropyLoss
+    - type: CrossEntropyLoss
       ignore_index: 255
-    - !CrossEntropyLoss
+      # seg_loss
+    - type: MSELoss
       ignore_index: 255
+      # area_loss
+    
   coef: [1.0, 1.0]  # coeficiente para seg_loss e area_loss
 
 model:

@@ -28,7 +28,7 @@ from .hrf import HRF
 from .chase_db1 import CHASEDB1
 from .pp_humanseg14k import PPHumanSeg14K
 from .pssl import PSSLDataset
-from .leaf_area_dataset import LeafAreaDataset
+from .leaf_area_dataset import LeafDataset
 
 from paddleseg.cvlibs import manager
 

@@ -36,4 +36,3 @@ from .semantic_encode_cross_entropy_loss import SECrossEntropyLoss
 from .semantic_connectivity_loss import SemanticConnectivityLoss
 from .maskformer_loss import MaskFormerLoss
 from .distillation_loss import DistillationLoss
-from .semantic_area_loss import SemanticAreaLoss

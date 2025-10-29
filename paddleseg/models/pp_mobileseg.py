@@ -100,6 +100,81 @@ class PPMobileSeg(nn.Layer):
         # Retorno como lista, seguindo a convenção do PaddleSeg (permite múltiplas saídas)
         return [seg_logits, area_logits]
 
+    def loss_computation(self, logits_list, losses, data):
+        """
+        Custom loss computation for PPMobileSeg.
+
+        This method expects `logits_list` to be [seg_logits, area_logits].
+        It computes:
+          - segmentation loss using data['label'] and losses['types'][0]
+          - two area losses (leaf and square) by masking the area labels using
+            the predicted segmentation map and then computes the area loss
+            (using losses['types'][1]) inside each masked region. The two
+            area losses are summed and multiplied by losses['coef'][1].
+
+        Returns a list [seg_loss, area_loss_total] so it matches the current
+        YAML config which defines two loss types/coefs.
+        """
+        if not isinstance(logits_list, (list, tuple)) or len(logits_list) < 2:
+            raise RuntimeError(
+                "logits_list must be a list or tuple with at least two elements: [seg_logits, area_logits].")
+
+        seg_logits = logits_list[0]
+        area_logits = logits_list[1]
+
+        # Extract labels from data dict
+        labels = data.get('label', None)
+        area_labels = data.get('areaLabel', None)
+        if labels is None or area_labels is None:
+            raise RuntimeError("data must contain 'label' and 'areaLabel' for loss computation")
+
+        # Remove channel dim if present: (N,1,H,W) -> (N,H,W)
+        if labels.ndim == 4 and labels.shape[1] == 1:
+            labels = paddle.squeeze(labels, axis=1)
+        if area_labels.ndim == 4 and area_labels.shape[1] == 1:
+            area_labels = paddle.squeeze(area_labels, axis=1)
+
+        labels = labels.astype('int64')
+        area_labels = area_labels.astype('int64')
+
+        # Default coefficients
+        coef_seg = losses['coef'][0] if 'coef' in losses and len(losses['coef']) > 0 else 1.0
+        coef_area = losses['coef'][1] if 'coef' in losses and len(losses['coef']) > 1 else 1.0
+
+        # Segmentation loss (apply first loss function to seg_logits)
+        seg_loss_fn = losses['types'][0]
+        seg_loss = seg_loss_fn(seg_logits, labels) * coef_seg
+
+        # Build predicted segmentation map to create masks (use argmax)
+        seg_pred = paddle.argmax(seg_logits, axis=1)  # (N, H, W)
+
+        # Define class ids for leaf and square (adjust if your labels differ)
+        leaf_class = 1
+        square_class = 2
+
+        ignore_index = 255
+
+        # Prepare masked area labels for leaf
+        leaf_mask = (seg_pred == leaf_class)  # boolean mask
+        masked_leaf_labels = area_labels.clone()
+        # set outside-leaf pixels to ignore_index
+        masked_leaf_labels[~leaf_mask] = ignore_index
+
+        # Prepare masked area labels for square
+        square_mask = (seg_pred == square_class)
+        masked_square_labels = area_labels.clone()
+        masked_square_labels[~square_mask] = ignore_index
+
+        # Area loss function (we reuse losses['types'][1] for both)
+        area_loss_fn = losses['types'][1]
+        leaf_loss = area_loss_fn(area_logits, masked_leaf_labels)
+        square_loss = area_loss_fn(area_logits, masked_square_labels)
+
+        # Sum area losses and apply coefficient
+        area_loss = (leaf_loss + square_loss) * coef_area
+
+        return [seg_loss, area_loss]
+
 
 class PPMobileSegHead(nn.Layer): #decoder aqui
     # Cabeça simples de segmentação:
@@ -184,28 +259,15 @@ class AreaSegHead(nn.Layer): #decoder aqui
 
 
 def loss_computation(self, logits_list, losses, data):
-    """
-    logits_list: list de logits produzidos pelo forward (espera-se [seg_logits, area_logits])
-    losses: dict contendo 'types' (lista de loss objects) e 'coef' (lista de coeficientes)
-    data: dicionário do dataset contendo pelo menos 'label' e 'areaLabel'
-    Retorna: lista de perdas ponderadas (cada item já multiplicado pelo coef)
-    """
-    # Garantir a consistência da entrada
-    if not isinstance(logits_list, (list, tuple)):
-        raise RuntimeError("logits_list deve ser list/tuple com duas entradas (seg, area)")
+    # logits_list[0] -> seg_logits, logits_list[1] -> area_logits
+    seg_logits = logits_list[0]
+    area_logits = logits_list[1]
 
-    if len(logits_list) != len(losses['types']):
-        # A checagem do train.py também verifica, mas é útil explicitar
-        raise RuntimeError(f"Comprimento de logits_list ({len(logits_list)}) != número de loss types ({len(losses['types'])})")
+    # extrair labels do data
+    labels = data['label']
+    area_labels = data['areaLabel']
 
-    # Extrair rótulos do dicionário (e converter para int64, remover eixo channel singleton se precisar)
-    labels = data.get('label', None)
-    area_labels = data.get('areaLabel', None)
-
-    if labels is None or area_labels is None:
-        raise RuntimeError("data deve conter 'label' e 'areaLabel' para calcular as perdas")
-
-    # squeeze se tiver shape (N,1,H,W)
+    # squeeze se necessário
     if labels.ndim == 4 and labels.shape[1] == 1:
         labels = paddle.squeeze(labels, axis=1)
     if area_labels.ndim == 4 and area_labels.shape[1] == 1:
@@ -214,25 +276,32 @@ def loss_computation(self, logits_list, losses, data):
     labels = labels.astype('int64')
     area_labels = area_labels.astype('int64')
 
+    # 1) gerar máscara de interesse a partir de seg_logits (predição)
+    seg_pred = paddle.argmax(seg_logits, axis=1)  # (N, H, W), ints
+    # Caso queira usar GT: seg_pred = labels
+
+    # 2) criar máscaras booleanas
+    leaf_class = 1  # ajuste conforme sua label (leaf)
+    square_class = 2  # ajuste conforme sua label (square)
+    leaf_mask = (seg_pred == leaf_class)        # bool tensor
+    square_mask = (seg_pred == square_class)    # bool tensor
+
+    # 3) transformar area_labels em ignore_index fora da máscara
+    ignore_index = 255
+    masked_area_labels = area_labels.clone()
+    masked_area_labels[~leaf_mask] = ignore_index
+    masked_area_labels[~square_mask] = ignore_index
+
+    # 4) calcular losses — usar losses['types'] na ordem
     loss_list = []
-    # para cada logit, calcular a loss correspondente.
-    # espera-se que losses['types'] esteja alinhado com a ordem de logits_list.
-    for i, logits in enumerate(logits_list):
-        loss_fn = losses['types'][i]
+    for i, loss_fn in enumerate(losses['types']):
         coef = losses['coef'][i] if 'coef' in losses and len(losses['coef']) > i else 1.0
-
-        # Assumimos: index 0 -> segmentation (usa labels), index 1 -> area (usa area_labels)
         if i == 0:
-            tgt = labels
+            # seg loss com labels completos
+            loss_list.append(coef * loss_fn(seg_logits, labels))
         elif i == 1:
-            tgt = area_labels
+            # area loss apenas onde mask == True (labels fora são ignore_index)
+            loss_list.append(coef * loss_fn(area_logits, masked_area_labels))
         else:
-            # caso você tenha mais cabeças, por enquanto usamos labels por padrão
-            tgt = labels
-
-        # Algumas losses específicas podem esperar edges ou outro formato; aqui tratamos o caso comum:
-        # loss_fn espera (logits, labels)
-        loss_val = loss_fn(logits, tgt)
-        loss_list.append(coef * loss_val)
-
+            loss_list.append(coef * loss_fn(logits_list[i], labels))
     return loss_list

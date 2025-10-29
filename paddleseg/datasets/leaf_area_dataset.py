@@ -61,6 +61,10 @@ class LeafDataset(paddle.io.Dataset):
 
     """
 
+    NUM_CLASSES = 3
+    IGNORE_INDEX = 255
+    IMG_CHANNELS = 3
+
     def __init__(self,
                  mode,
                  dataset_root,
