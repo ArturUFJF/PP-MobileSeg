@@ -71,14 +71,23 @@ def list_labels(lbl_dir: str, lbl_ext: str, lbl_suffix: str) -> Dict[str, str]:
                 m[key] = path
     return m
 
-def list_masks(mask_dir: str, mask_ext: str, mask_suffix: str) -> Dict[str, str]:
+def list_masks(mask_dir: str, mask_exts, mask_suffix: str) -> Dict[str, str]:
     """Indexa arquivos de máscara de área removendo um sufixo opcional."""
 
     m = {}
     suf_re = re.compile(rf'({re.escape(mask_suffix)})$', flags=re.IGNORECASE) if mask_suffix else None
+    # allow mask_exts to be a comma-separated string, a list, or 'auto'
+    if isinstance(mask_exts, str):
+        if mask_exts.lower() == 'auto':
+            mask_ext_list = ['.raw', '.png', '.jpg', '.jpeg']
+        else:
+            mask_ext_list = [e.strip().lower() if e.strip().startswith('.') else '.'+e.strip().lower() for e in mask_exts.split(',')]
+    else:
+        mask_ext_list = [e.lower() for e in mask_exts]
+
     for root, _, files in os.walk(mask_dir):
         for f in files:
-            if os.path.splitext(f)[1].lower() == mask_ext.lower():
+            if os.path.splitext(f)[1].lower() in mask_ext_list:
                 base = os.path.splitext(f)[0]
                 if suf_re:
                     # Remove o sufixo configurado para permitir casar pelo nome base
@@ -143,10 +152,13 @@ def main():
     lbl_dir = os.path.abspath(args.lbl_dir)
     area_mask_dir = os.path.abspath(args.area_mask_dir)
     out_root = os.path.abspath(args.out_root) if args.out_root else os.path.commonpath([img_dir, lbl_dir])
-    # Garante que as extensões tenham o ponto inicial e estejam em minúsculas
+    # Garante que as extensões de imagem tenham o ponto inicial e estejam em minúsculas
     img_exts = [e.strip().lower() if e.strip().startswith(".") else "."+e.strip().lower() for e in args.img_exts.split(",")]
     lbl_ext = args.lbl_ext if args.lbl_ext.startswith(".") else "."+args.lbl_ext
-    mask_ext = args.area_mask_ext if args.area_mask_ext.startswith(".") else "." + args.area_mask_ext
+    # NOTE: do not force a leading dot on area-mask-ext because we accept
+    # special values like 'auto' and comma-separated lists; leave raw value
+    # as provided and let list_masks normalize it.
+    mask_ext = args.area_mask_ext
 
     # Cria os mapas de nome base -> caminho para imagens, labels e máscaras
     imgs = list_images(img_dir, img_exts)
@@ -173,15 +185,26 @@ def main():
     # Embaralha os pares para garantir aleatoriedade reprodutível
     random.seed(args.seed)
     random.shuffle(pairs)
-    # Converte as proporções em contagens absolutas
-    n_train = int(total * s_train)
-    n_val = int(total * s_val)
-    n_test = total - n_train - n_val
 
-    # Faz o fatiamento dos pares conforme as quantidades calculadas
-    train_pairs = pairs[:n_train]
-    val_pairs = pairs[n_train:n_train+n_val]
-    test_pairs = pairs[n_train+n_val:]
+    # Garantir correspondência por subpastas: somente arquivos dentro de
+    # subpastas "train" vão para train.txt, e somente os dentro de "val"
+    # vão para val.txt. Restantes vão para test.txt.
+    def in_subfolder(path, name):
+        # Normalize e verifique componentes do caminho (case-insensitive)
+        comps = os.path.normpath(path).lower().split(os.sep)
+        return name.lower() in comps
+
+    train_pairs = [p for p in pairs if in_subfolder(p[0], 'train')]
+    val_pairs = [p for p in pairs if in_subfolder(p[0], 'val')]
+    test_pairs = [p for p in pairs if in_subfolder(p[0], 'test')]
+
+    # Pares não localizados em train/val/test ficam em `others` e serão
+    # alocados para test por padrão (não poluem train/val)
+    allocated = set(train_pairs) | set(val_pairs) | set(test_pairs)
+    others = [p for p in pairs if p not in allocated]
+    if others:
+        print(f"Warning: {len(others)} pairs are not under 'train'/'val'/'test' subfolders. They will be added to test set.")
+        test_pairs.extend(others)
 
     # Persistência das listas de caminhos relativos
     write_list(os.path.join(out_root, "train.txt"), train_pairs, out_root)
