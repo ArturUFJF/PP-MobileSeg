@@ -12,6 +12,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""
+Comentários gerais (PT-BR):
+
+Este arquivo contém as transformações e augmentations usadas pelo dataset.
+As transformações são aplicadas de forma síncrona a imagens e rótulos quando
+necessário (por exemplo, crop/resize/flip), garantindo que as máscaras e os
+mapas de área permanecem alinhados com a imagem.
+
+Observação importante sobre .raw (areaLabel): o loader/transform deve preservar
+o tipo e a escala do mapa de área vindo do arquivo .raw (por exemplo float32)
+para evitar perda de precisão. A calibragem absoluta (cm^2) é tratada fora
+das transforms, usando metadados fornecidos pelo dataset ou por heurísticas de
+calibração por-imagem.
+"""
+
 import random
 import math
 

@@ -1,3 +1,5 @@
+# Configurações base para o dataset LSIDBeans.
+# Este arquivo define dataset, losses e parâmetros de treinamento básicos.
 batch_size: 4
 num_workers: 4  # ajuste conforme sua GPU
 iters: 12000

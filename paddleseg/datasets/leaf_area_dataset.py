@@ -61,6 +61,17 @@ class LeafDataset(paddle.io.Dataset):
 
     """
 
+    # Comentários adicionais (PT-BR):
+    # - O dataset retorna, além de `img`, `label` e `areaLabel`, metadados opcionais:
+    #   - `square_area_cm2`: soma das áreas em `areaLabel` sobre a máscara GT do quadrado (se disponível).
+    #   - `pixel_area_cm2`: média de área por pixel dentro do quadrado (square_area_cm2 / pixel_count).
+    # - Importante: não forçamos aqui que o quadrado tenha 25 cm^2. Em vez disso, preservamos
+    #   os valores fornecidos nos arquivos .raw (que podem variar) e expomos essas medidas
+    #   como metadata para calibragem por imagem durante inferência, se desejado.
+    # - A rede recebe `areaLabel` (valores por-pixel vindos do .raw) e, durante o treino, a
+    #   perda de área será aplicada apenas nas regiões relevantes (folha/quadrado) via Hadamard
+    #   com as máscaras GT — assim a rede aprende a estimativa por-pixel diretamente.
+
     NUM_CLASSES = 3
     IGNORE_INDEX = 255
     IMG_CHANNELS = 3

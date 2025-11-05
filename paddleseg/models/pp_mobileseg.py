@@ -14,6 +14,26 @@
 # Você pode obter uma cópia da Licença em http://www.apache.org/licenses/LICENSE-2.0
 # Software fornecido "como está", sem garantias.
 
+"""
+Comentários gerais (PT-BR):
+
+Este módulo implementa o modelo PPMobileSeg adaptado para duas saídas:
+- `seg_logits`: logits de segmentação (num_classes canais) usados para treinar/avaliar a segmentação.
+- `area_logits`: mapa de regressão por-pixel (1 canal) que estima a área associada a cada pixel
+    (por exemplo, área estimada em unidades arbitrárias fornecidas pelos arquivos .raw).
+
+Principais decisões implementadas aqui:
+- A cabeça de área (`AreaSegHead`) devolve um mapa de 1 canal com valores contínuos.
+- A função `loss_computation` calcula duas perdas:
+    1) perda de segmentação (CrossEntropy) usando `data['label']`;
+    2) perda de área (MSE) calculada apenas dentro das máscaras dos objetos (folha e quadrado)
+         usando o produto de Hadamard entre a máscara binária (GT) e os valores de `areaLabel` (.raw).
+
+Isso faz com que a rede aprenda os valores por-pixel da mapagem de área diretamente dos .raw,
+sem forçar uma área fixa para o marcador (quadrado). A calibração absoluta (cm^2) pode ser
+tratada separadamente no passo de inferência/visualização se necessário.
+"""
+
 import warnings  # Import para avisos; não é utilizado explicitamente abaixo, mas pode ser mantido para extensões
 
 import paddle  # Framework principal (tensores, autograd, etc.)
@@ -285,52 +305,3 @@ class AreaSegHead(nn.Layer): #decoder aqui
         return x
     
     #Lembrar do produto de Hadamard
-
-
-def loss_computation(self, logits_list, losses, data):
-    # logits_list[0] -> seg_logits, logits_list[1] -> area_logits
-    seg_logits = logits_list[0]
-    area_logits = logits_list[1]
-
-    # extrair labels do data
-    labels = data['label']
-    area_labels = data['areaLabel']
-
-    # squeeze se necessário
-    if labels.ndim == 4 and labels.shape[1] == 1:
-        labels = paddle.squeeze(labels, axis=1)
-    if area_labels.ndim == 4 and area_labels.shape[1] == 1:
-        area_labels = paddle.squeeze(area_labels, axis=1)
-
-    labels = labels.astype('int64')
-    area_labels = area_labels.astype('int64')
-
-    # 1) gerar máscara de interesse a partir de seg_logits (predição)
-    seg_pred = paddle.argmax(seg_logits, axis=1)  # (N, H, W), ints
-    # Caso queira usar GT: seg_pred = labels
-
-    # 2) criar máscaras booleanas
-    leaf_class = 1  # ajuste conforme sua label (leaf)
-    square_class = 2  # ajuste conforme sua label (square)
-    leaf_mask = (seg_pred == leaf_class)        # bool tensor
-    square_mask = (seg_pred == square_class)    # bool tensor
-
-    # 3) transformar area_labels em ignore_index fora da máscara
-    ignore_index = 255
-    masked_area_labels = area_labels.clone()
-    masked_area_labels[~leaf_mask] = ignore_index
-    masked_area_labels[~square_mask] = ignore_index
-
-    # 4) calcular losses — usar losses['types'] na ordem
-    loss_list = []
-    for i, loss_fn in enumerate(losses['types']):
-        coef = losses['coef'][i] if 'coef' in losses and len(losses['coef']) > i else 1.0
-        if i == 0:
-            # seg loss com labels completos
-            loss_list.append(coef * loss_fn(seg_logits, labels))
-        elif i == 1:
-            # area loss apenas onde mask == True (labels fora são ignore_index)
-            loss_list.append(coef * loss_fn(area_logits, masked_area_labels))
-        else:
-            loss_list.append(coef * loss_fn(logits_list[i], labels))
-    return loss_list

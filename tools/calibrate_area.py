@@ -14,6 +14,22 @@ from paddleseg.core.predict import preprocess
 # It saves `tools/area_calibration.json` with the coefficients and a CSV of per-image
 # predictions.
 
+"""
+Comentários (PT-BR):
+
+Este utilitário executa inferência sobre um conjunto de imagens e extrai as
+somas de área brutas produzidas pela cabeça de área (produto de Hadamard entre
+o mapa de área e as máscaras preditas). Se houver `area_dict` com áreas reais
+para algumas amostras, o script ajusta uma regressão linear simples (real = a*raw + b)
+e grava `tools/area_calibration.json` com os coeficientes. O CSV resultante ajuda
+na inspeção dos resultados por imagem.
+
+Uso típico:
+    python tools/calibrate_area.py --config path/to/config.yml --model_path path/to/weights
+
+O script não altera pesos; apenas gera arquivos auxiliares para calibração.
+"""
+
 parser = argparse.ArgumentParser()
 parser.add_argument('--config', required=True, help='model config file')
 parser.add_argument('--model_path', required=True, help='trained model params')

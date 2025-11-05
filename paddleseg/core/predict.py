@@ -100,6 +100,26 @@ def predict(model,
         custom_color (list, optional): Save images with a custom color map. Default: None, use paddleseg's default color map.
         use_multilabel (bool, optional): Whether to enable multilabel mode. Default: False.
 
+    
+    # Observações (PT-BR):
+    # - Calibração por imagem (preferida): quando o dataset/transforms fornece
+    #   `data['pixel_area_cm2']` ou `data['square_area_cm2']` essas medidas são usadas
+    #   para converter as somas de área previstas em unidades reais (cm^2) por imagem.
+    #   Caso não haja metadata disponível, o código tenta usar a contagem de pixels do
+    #   quadrado predito para estimar a área por pixel (nominalmente 25 cm^2 dividido pela
+    #   contagem de pixels do quadrado), ou por fim usa um ajuste global salvo em
+    #   `tools/area_calibration.json`.
+    #
+    # - Fluxo de cálculo de áreas:
+    #   1) obtém o mapa de área bruto da cabeça `area_head` e a máscara binária predita `pred`;
+    #   2) calcula produto de Hadamard entre `area_map` e cada máscara (folha/quad) para obter
+    #      somas brutas por objeto na unidade do .raw;
+    #   3) aplica a calibração por-imagem (quando possível) para converter estas somas em cm^2
+    #      para exibição/avaliação.
+    #
+    # - A lógica de preferências de calibração está documentada no código e exibida na sobreposição
+    #   das imagens salvas para deixar claro qual fonte de calibração foi usada.
+
     """
     utils.utils.load_entire_model(model, model_path)
     model.eval()

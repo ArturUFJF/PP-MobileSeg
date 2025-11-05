@@ -1,4 +1,9 @@
 _base_: '../_base_/lsidbeans.yml'
+# Configuração do modelo PPMobileSeg para o dataset LSIDBeans.
+# As configurações específicas de otimização e agendamento de aprendizagem
+# estão sobrepostas a partir do arquivo base. A perda contém duas entradas:
+# - CrossEntropyLoss para segmentação
+# - MSELoss para regressão de área por-pixel
 
 batch_size: 4  # ajuste conforme sua GPU
 num_workers: 4  # ajuste conforme sua GPU
