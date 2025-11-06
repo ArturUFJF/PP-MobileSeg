@@ -194,16 +194,13 @@ class LeafDataset(paddle.io.Dataset):
                 # Gera um mapa de borda opcional para supervisionar contornos
                 edge_mask = F.mask_to_binary_edge(
                     data['label'], radius=2, num_classes=self.num_classes)
-                area_edge_mask = F.mask_to_binary_edge(
-                    data['areaLabel'], radius=2, num_classes=self.num_classes)
                 data['edge'] = edge_mask
-                data['areaEdge'] = area_edge_mask
+
             elif 'edge' in data:  # for AddEdgeLabel
                 # F.mask_to_binary_edge is so slow
                 # AddEdgeLabel will faster
                 # But offline generation of edges might be better
                 data['edge'][data['edge'] == self.ignore_index] = 0
-                data['areaEdge'][data['areaEdge'] == self.ignore_index] = 0
 
         return data
 
