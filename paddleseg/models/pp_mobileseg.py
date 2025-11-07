@@ -40,10 +40,11 @@ import paddle  # Framework principal (tensores, autograd, etc.)
 import paddle.nn as nn  # Módulos de rede neural
 import paddle.nn.functional as F  # Funções funcionais (ex.: interpolate)
 
+from paddleseg.core.train import check_logits_losses
 from paddleseg.cvlibs import manager  # Registro/gerenciamento de componentes (MODELS)
-from paddleseg.models import layers  # Camadas utilitárias (não usadas diretamente neste arquivo)
+from paddleseg.models import layers, losses  # Camadas utilitárias (não usadas diretamente neste arquivo)
 from paddleseg.utils import utils  # Utilidades (ex.: carregamento de pesos)
-from paddleseg.models.backbones.strideformer import ConvBNAct  # Bloco conv->BN->Ativação pronto
+from paddleseg.models.backbones.strideformer import ConvBNAct  # Bloco conv->BN->Ativação pront
 
 # O decorador abaixo registra a classe no registry de modelos do PaddleSeg sob o nome da classe.
 @manager.MODELS.add_component
@@ -84,7 +85,7 @@ class PPMobileSeg(nn.Layer):
             align_corners=align_corners)
         
         self.area_head = AreaSegHead(
-            num_classes=num_classes,  
+            num_classes=1,  
             in_channels=backbone.feat_channels[0],
             use_dw=head_use_dw,
             align_corners=align_corners)
@@ -116,115 +117,40 @@ class PPMobileSeg(nn.Layer):
         else:
             # Caso seja passado um modo de upsample não implementado
             raise NotImplementedError(self.upsample, " is not implemented")
+        
+        pred = seg_logits.argmax(axis=1, keepdim=True)  # (B, 1, H, W)
+        mask = ((pred == 1) | (pred == 2)).astype('float32')  # Máscara binária para classes de interesse
+        area_logits = area_logits * mask  # Aplica a máscara ao mapa de área, produto de Hadamard.
 
         # Retorno como lista, seguindo a convenção do PaddleSeg (permite múltiplas saídas)
         return [seg_logits, area_logits]
 
     def loss_computation(self, logits_list, losses, data):
         """
-        Custom loss computation for PPMobileSeg.
-
-        This method expects `logits_list` to be [seg_logits, area_logits].
-        It computes:
-          - segmentation loss using data['label'] and losses['types'][0]
-          - two area losses (leaf and square) by masking the area labels using
-            the predicted segmentation map and then computes the area loss
-            (using losses['types'][1]) inside each masked region. The two
-            area losses are summed and multiplied by losses['coef'][1].
-
-        Returns a list [seg_loss, area_loss_total] so it matches the current
-        YAML config which defines two loss types/coefs.
+        Usa CE para segmentação e MSE mascarada para área.
+        losses['types'][0] deve ser CrossEntropyLoss (labels int64 em (N,1,H,W)).
         """
-        if not isinstance(logits_list, (list, tuple)) or len(logits_list) < 2:
-            raise RuntimeError(
-                "logits_list must be a list or tuple with at least two elements: [seg_logits, area_logits].")
+        check_logits_losses(logits_list, losses)
+        assert len(logits_list) == 2, "Esperado [seg_logits, area_logits]"
 
-        seg_logits = logits_list[0]
-        area_logits = logits_list[1]
+        seg_logits, area_logits = logits_list
 
-        # Extract labels from data dict
-        labels = data.get('label', None)
-        area_labels = data.get('areaLabel', None)
-        if labels is None or area_labels is None:
-            raise RuntimeError("data must contain 'label' and 'areaLabel' for loss computation")
+        # 1) Cross-entropy de segmentação
+        seg_labels = data['label'].astype('int64')              # (N,1,H,W)
+        crossEntropy = losses['types'][0]
+        coef_ce = losses['coef'][0]
+        seg_loss = crossEntropy(seg_logits, seg_labels)                   # CE(logits (N,C,H,W), label (N,1,H,W))
 
-        # Remove channel dim if present: (N,1,H,W) -> (N,H,W)
-        if labels.ndim == 4 and labels.shape[1] == 1:
-            labels = paddle.squeeze(labels, axis=1)
-        if area_labels.ndim == 4 and area_labels.shape[1] == 1:
-            area_labels = paddle.squeeze(area_labels, axis=1)
+        # 2) MSE de área (canal único), mascarada por pixels de classe > 0
+        area_pred = area_logits.squeeze(1)                        # (N,H,W)
+        area_gt = data['areaLabel'].squeeze(1)                   # (N,H,W)
+        area_loss = (area_pred - area_gt) ** 2
 
-        labels = labels.astype('int64')
-        area_labels = area_labels.astype('int64')
+        coef_area = 1.0
 
-        # Default coefficients
-        coef_seg = losses['coef'][0] if 'coef' in losses and len(losses['coef']) > 0 else 1.0
-        coef_area = losses['coef'][1] if 'coef' in losses and len(losses['coef']) > 1 else 1.0
-
-        # Segmentation loss (apply first loss function to seg_logits)
-        seg_loss_fn = losses['types'][0]
-        seg_loss = seg_loss_fn(seg_logits, labels) * coef_seg
-
-        # Build predicted segmentation map to create masks (use argmax)
-        seg_pred = paddle.argmax(seg_logits, axis=1)  # (N, H, W)
-
-        # Define class ids for leaf and square (adjust if your labels differ)
-        leaf_class = 1
-        square_class = 2
-
-        ignore_index = 255
-
-        # Prepare masked area labels for leaf
-        leaf_mask = (seg_pred == leaf_class)  # boolean mask
-        masked_leaf_labels = area_labels.clone()
-        # set outside-leaf pixels to ignore_index
-        masked_leaf_labels[~leaf_mask] = ignore_index
-
-        # Prepare masked area labels for square
-        square_mask = (seg_pred == square_class)
-        masked_square_labels = area_labels.clone()
-        masked_square_labels[~square_mask] = ignore_index
-
-        # Area loss: compute masked MSE manually (ignore pixels == ignore_index)
-        # area_logits may have multiple channels; use the first channel as scalar prediction
-        # Ensure tensors are float32 for subtraction
-        area_pred = area_logits
-        # If area_pred has multiple channels, reduce to one channel (mean or first)
-        if area_pred.ndim == 4 and area_pred.shape[1] > 1:
-            # take first channel as the scalar area prediction
-            area_pred = area_pred[:, :1, :, :]
-
-        # Prepare masked labels as float32 and add channel dim to match area_pred
-        masked_leaf = paddle.cast(masked_leaf_labels, 'float32')
-        masked_square = paddle.cast(masked_square_labels, 'float32')
-        if masked_leaf.ndim == 3:
-            masked_leaf = paddle.unsqueeze(masked_leaf, axis=1)
-        if masked_square.ndim == 3:
-            masked_square = paddle.unsqueeze(masked_square, axis=1)
-
-        # Create valid pixel masks (1.0 for valid, 0.0 for ignore_index)
-        valid_leaf = paddle.cast(masked_leaf != ignore_index, 'float32')
-        valid_square = paddle.cast(masked_square != ignore_index, 'float32')
-
-        # Compute masked MSE: sum((pred - target)^2 * valid) / (sum(valid) + eps)
-        eps = 1e-6
-        # leaf
-        diff_leaf = area_pred - masked_leaf
-        sq_leaf = paddle.square(diff_leaf) * valid_leaf
-        denom_leaf = paddle.sum(valid_leaf)
-        leaf_loss = paddle.sum(sq_leaf) / (denom_leaf + eps)
-        # square
-        diff_square = area_pred - masked_square
-        sq_square = paddle.square(diff_square) * valid_square
-        denom_square = paddle.sum(valid_square)
-        square_loss = paddle.sum(sq_square) / (denom_square + eps)
-
-        # If there are no valid pixels for a mask, its loss will be near 0 due to eps.
-        area_loss = (leaf_loss + square_loss) * coef_area
-
-        return [seg_loss, area_loss]
-
-
+        return [coef_ce * seg_loss, coef_area * area_loss]
+    
+    
 class PPMobileSegHead(nn.Layer): #decoder aqui
     # Cabeça simples de segmentação:
     # - Um bloco Conv+BN+ReLU (linear_fuse) com kernel 1x1
@@ -304,4 +230,3 @@ class AreaSegHead(nn.Layer): #decoder aqui
         x = self.conv_seg(x)  # Logits por classe (B, num_classes, h, w)
         return x
     
-    #Lembrar do produto de Hadamard

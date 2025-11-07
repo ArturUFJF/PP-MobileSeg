@@ -17,13 +17,13 @@ train_dataset:
     #   scale_step_size: 0.125
     # - type: RandomPaddingCrop
     #   crop_size: [512, 512]  # ajustado para imagens menores
-    - type: RandomHorizontalFlip
-    - type: RandomVerticalFlip  # útil para folhas
-    - type: RandomDistort
-      brightness_range: 0.25
-      contrast_range: 0.25
-      saturation_range: 0.25
-    - type: Normalize
+    # - type: RandomHorizontalFlip
+    # - type: RandomVerticalFlip  # útil para folhas
+    # - type: RandomDistort
+    #   brightness_range: 0.25
+    #   contrast_range: 0.25
+    #   saturation_range: 0.25
+    #- type: Normalize
 
 optimizer:
   _inherited_: False
@@ -48,13 +48,7 @@ lr_scheduler:
 loss:
   types:
     - type: CrossEntropyLoss
-      ignore_index: 255
-      # seg_loss
-    - type: MSELoss
-      ignore_index: 255
-      # area_loss
-    
-  coef: [1.0, 1.0]  # coeficiente para seg_loss e area_loss
+  coef: 1.0  # coeficiente para seg_loss e area_loss
 
 model:
   type: PPMobileSeg
