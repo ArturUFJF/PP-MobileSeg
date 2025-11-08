@@ -144,11 +144,12 @@ class PPMobileSeg(nn.Layer):
         # 2) MSE de área (canal único), mascarada por pixels de classe > 0
         area_pred = area_logits.squeeze(1)                        # (N,H,W)
         area_gt = data['areaLabel'].squeeze(1)                   # (N,H,W)
-        area_loss = (area_pred - area_gt) ** 2
+        mse = losses['types'][1]
+        coef_mse = losses['coef'][1]
+        area_loss = mse(area_pred, area_gt)  # MSE(logits (N,H,W), areaLabel (N,H,W))
+        # area_loss = (area_pred - area_gt) ** 2
 
-        coef_area = 1.0
-
-        return [coef_ce * seg_loss, coef_area * area_loss]
+        return [coef_ce * seg_loss, coef_mse * area_loss]
     
     
 class PPMobileSegHead(nn.Layer): #decoder aqui

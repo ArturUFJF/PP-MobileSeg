@@ -5,9 +5,9 @@ _base_: '../_base_/lsidbeans.yml'
 # - CrossEntropyLoss para segmentação
 # - MSELoss para regressão de área por-pixel
 
-batch_size: 4  # ajuste conforme sua GPU
+batch_size: 12  # ajuste conforme sua GPU
 num_workers: 4  # ajuste conforme sua GPU
-iters: 12000
+iters: 30000
 
 train_dataset:
   transforms: #potencialmente ajustar
@@ -23,7 +23,10 @@ train_dataset:
     #   brightness_range: 0.25
     #   contrast_range: 0.25
     #   saturation_range: 0.25
-    #- type: Normalize
+    - type: Normalize
+
+precision: fp16
+amp_level: O1
 
 optimizer:
   _inherited_: False
@@ -48,7 +51,9 @@ lr_scheduler:
 loss:
   types:
     - type: CrossEntropyLoss
-  coef: 1.0  # coeficiente para seg_loss e area_loss
+    - type: MSELoss
+  # Coefs must be a list matching the number of loss types (seg, area).
+  coef: [1.0, 1.0]  # [seg_coef, area_coef]
 
 model:
   type: PPMobileSeg
