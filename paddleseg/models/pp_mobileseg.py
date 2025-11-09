@@ -143,7 +143,8 @@ class PPMobileSeg(nn.Layer):
 
         # 2) MSE de área (canal único), mascarada por pixels de classe > 0
         area_pred = area_logits.squeeze(1)                        # (N,H,W)
-        area_gt = data['areaLabel'].squeeze(1)                   # (N,H,W)
+        area_gt = data['areaLabel'].squeeze(1)                    # (N,H,W), potencialmente preciso multiplicar pela máscara primeiro!!
+        area_gt = area_gt * ((seg_labels.squeeze(1) > 0).astype('float32'))  # Aplica máscara binária GT
         mse = losses['types'][1]
         coef_mse = losses['coef'][1]
         area_loss = mse(area_pred, area_gt)  # MSE(logits (N,H,W), areaLabel (N,H,W))

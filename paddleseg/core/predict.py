@@ -296,55 +296,6 @@ def predict(model,
                     mkdir(area_out_path)
                     # cv2.imwrite writes BGR correctly
                     cv2.imwrite(area_out_path, cmap_bgr)
-
-                    # Compute numeric areas for leaf (class=1) and square (class=2)
-                    try:
-                        # pred is uint8 numpy array with shape (H, W)
-                        leaf_mask = (pred == 1)
-                        square_mask = (pred == 2)
-                        # Ensure amap shape matches pred
-                        if amap.shape != pred.shape:
-                            # try transpose or squeeze if necessary
-                            amap_proc = np.squeeze(amap)
-                        else:
-                            amap_proc = amap
-
-                        leaf_area_val = float(np.sum(amap_proc[leaf_mask])) if np.any(leaf_mask) else 0.0
-                        square_area_val = float(np.sum(amap_proc[square_mask])) if np.any(square_mask) else 0.0
-
-                        logger.info("Predicted areas for %s: leaf=%.4f  square=%.4f",
-                                    im_file, leaf_area_val, square_area_val)
-
-                        # Save numeric results next to area map
-                        area_txt_path = os.path.join(
-                            area_saved_dir, os.path.splitext(im_file)[0] + "_area.txt")
-                        mkdir(area_txt_path)
-                        with open(area_txt_path, 'w', encoding='utf-8') as fh:
-                            fh.write(f"leaf_area:{leaf_area_val:.6f}\n")
-                            fh.write(f"square_area:{square_area_val:.6f}\n")
-
-                        # Overlay text on the added_image for visualization
-                        try:
-                            # added_image is a numpy array (H,W,3) in BGR; draw text top-left
-                            text1 = f"Leaf: {leaf_area_val:.2f}"
-                            text2 = f"Square: {square_area_val:.2f}"
-                            font = cv2.FONT_HERSHEY_SIMPLEX
-                            scale = 0.8
-                            thickness = 2
-                            # position relative to image size
-                            h_img = added_image.shape[0]
-                            # Put two lines with small margin
-                            org1 = (10, 30)
-                            org2 = (10, 60)
-                            # draw outline for readability
-                            cv2.putText(added_image, text1, org1, font, scale, (0, 0, 0), thickness + 2, cv2.LINE_AA)
-                            cv2.putText(added_image, text1, org1, font, scale, (255, 255, 255), thickness, cv2.LINE_AA)
-                            cv2.putText(added_image, text2, org2, font, scale, (0, 0, 0), thickness + 2, cv2.LINE_AA)
-                            cv2.putText(added_image, text2, org2, font, scale, (255, 255, 255), thickness, cv2.LINE_AA)
-                        except Exception:
-                            logger.exception("Failed overlaying area text on image %s", im_file)
-                    except Exception:
-                        logger.exception("Failed computing numeric areas for %s", im_file)
                 else:
                     logger.info("No area_map for %s (skipping area visualization)", im_file)
             except Exception as e:
