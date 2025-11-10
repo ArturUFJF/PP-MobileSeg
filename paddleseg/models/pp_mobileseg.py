@@ -143,9 +143,12 @@ class PPMobileSeg(nn.Layer):
         seg_loss = crossEntropy(seg_logits, seg_labels)                   # CE(logits (N,C,H,W), label (N,1,H,W))
 
         # 2) MSE de área (canal único), mascarada por pixels de classe > 0
-        area_pred = area_logits.squeeze(1)                        # (N,H,W)
-        area_pred = area_pred * (seg_labels.squeeze(1) > 0).astype('float32')  # Máscara binária via produto de Hadamard
-        area_gt = data['areaLabel'].squeeze(1)                    # (N,H,W), sem Hadamard aqui
+        area_argmax = area_logits.argmax(axis=1).astype('float32')                        # (N,H,W)
+        seg_argmax = seg_logits.argmax(axis=1).astype('float32')                        # (N,H,W)
+        leaf_mask = (seg_argmax == 1).astype('float32')  # Máscara binária para classe da folha
+        square_mask = (seg_argmax == 2).astype('float32')/2  # Máscara binária para classe do quadrado
+        area_gt = data['areaLabel'].astype('float32')          # (N,H,W)
+        area_pred = area_argmax * (leaf_mask + square_mask)  # Aplica máscara binária via produto de Hadamard
         mse = losses['types'][1]
         coef_mse = losses['coef'][1]
         area_loss = mse(area_pred, area_gt)  # MSE(logits (N,H,W), areaLabel (N,H,W))
