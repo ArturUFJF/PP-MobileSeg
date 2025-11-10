@@ -47,6 +47,52 @@ def reverse_transform(pred, trans_info, mode='nearest'):
     return pred
 
 
+def _mask_area_by_prediction(pred, area_logit, classes=(1, 2)):
+    """Apply Hadamard product on area_logit using predicted mask for given classes.
+
+    - pred: paddle.Tensor, either (N,1,H,W) with integer class ids
+            or (N,C,H,W) boolean-like (multilabel) mask.
+    - area_logit: paddle.Tensor, e.g. (N,1,H,W) or (N,H,W)
+    - classes: tuple of class indices to keep (default (1,2)).
+
+    Returns masked area_logit; if shapes are unexpected the original area_logit
+    is returned to avoid breaking inference.
+    """
+    try:
+        # Build boolean mask
+        if pred.ndim == 4 and pred.shape[1] == 1:
+            mask = (pred == classes[0])
+            for c in classes[1:]:
+                mask = paddle.logical_or(mask, pred == c)
+        elif pred.ndim == 4 and pred.shape[1] > 1:
+            mask = None
+            for c in classes:
+                if pred.shape[1] > c:
+                    ch = pred[:, c:c+1, :, :]
+                    mask = ch if mask is None else paddle.logical_or(mask, ch)
+            if mask is None:
+                mask = paddle.zeros([pred.shape[0], 1, pred.shape[2], pred.shape[3]], dtype='bool')
+        else:
+            mask = (pred == classes[0])
+            for c in classes[1:]:
+                mask = paddle.logical_or(mask, pred == c)
+
+        # Cast mask to area dtype and align shapes
+        mask = paddle.cast(mask, area_logit.dtype)
+
+        if mask.shape != area_logit.shape:
+            if area_logit.ndim == 3 and mask.ndim == 4 and mask.shape[1] == 1:
+                mask = mask.squeeze(1)
+            elif area_logit.ndim == 4 and mask.ndim == 3:
+                mask = mask.unsqueeze(1)
+            elif mask.ndim == 4 and area_logit.ndim == 4 and area_logit.shape[1] == 1 and mask.shape[1] > 1:
+                mask = paddle.any(mask, axis=1, keepdim=True).astype(area_logit.dtype)
+
+        return area_logit * mask
+    except Exception:
+        return area_logit
+
+
 def flip_combination(flip_horizontal=False, flip_vertical=False):
     """
     Get flip combination.
@@ -219,7 +265,11 @@ def inference(model,
                 pred = (F.sigmoid(seg_logit) > 0.5).astype('int32')
             # Return pred and extra logits (if any). For compatibility return only one extra (first) if exists
             if len(extra_rets) > 0:
-                return pred, extra_rets[0]
+                try:
+                    masked = _mask_area_by_prediction(pred, extra_rets[0])
+                    return pred, masked
+                except Exception:
+                    return pred, extra_rets[0]
             else:
                 return pred, None
         else:
@@ -315,7 +365,11 @@ def aug_inference(model,
         else:
             pred = (F.sigmoid(seg_logit) > 0.5).astype('int32')
         if len(extra_rets) > 0:
-            return pred, extra_rets[0]
+            try:
+                masked = _mask_area_by_prediction(pred, extra_rets[0])
+                return pred, masked
+            except Exception:
+                return pred, extra_rets[0]
         else:
             return pred, None
     else:

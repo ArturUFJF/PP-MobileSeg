@@ -7,7 +7,7 @@ _base_: '../_base_/lsidbeans.yml'
 
 batch_size: 12  # ajuste conforme sua GPU
 num_workers: 4  # ajuste conforme sua GPU
-iters: 30000
+iters: 46700 #467 iters / epoch = 100 epochs
 
 train_dataset:
   transforms: #potencialmente ajustar
@@ -42,7 +42,7 @@ optimizer:
 
 lr_scheduler:
   type: PolynomialDecay
-  learning_rate: 0.0006
+  learning_rate: 0.008
   end_lr: 0
   power: 1.0
   warmup_iters: 1000
@@ -79,7 +79,7 @@ log_config:
 val_dataset_config:
   val_interval: 200
   early_stop:
-    patience: 1500
+    patience: 24
     min_improvement: 0.001
 
 

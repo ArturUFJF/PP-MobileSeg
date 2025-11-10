@@ -118,9 +118,10 @@ class PPMobileSeg(nn.Layer):
             # Caso seja passado um modo de upsample não implementado
             raise NotImplementedError(self.upsample, " is not implemented")
         
-        pred = seg_logits.argmax(axis=1, keepdim=True)  # (B, 1, H, W)
-        mask = ((pred == 1) | (pred == 2)).astype('float32')  # Máscara binária para classes de interesse
-        area_logits = area_logits * mask  # Aplica a máscara ao mapa de área, produto de Hadamard.
+        #pred = seg_logits.argmax(axis=1, keepdim=True)  # (B, 1, H, W)
+        #mask = ((pred == 1) | (pred == 2)).astype('float32')  # Máscara binária para classes de interesse
+        #area_logits = area_logits * mask  # Aplica a máscara ao mapa de área, produto de Hadamard.
+        #Acima não está correto, o correto é fazer isso apenas na loss_computation
 
         # Retorno como lista, seguindo a convenção do PaddleSeg (permite múltiplas saídas)
         return [seg_logits, area_logits]
@@ -143,8 +144,8 @@ class PPMobileSeg(nn.Layer):
 
         # 2) MSE de área (canal único), mascarada por pixels de classe > 0
         area_pred = area_logits.squeeze(1)                        # (N,H,W)
-        area_gt = data['areaLabel'].squeeze(1)                    # (N,H,W), potencialmente preciso multiplicar pela máscara primeiro!!
-        area_gt = area_gt * ((seg_labels.squeeze(1) > 0).astype('float32'))  # Aplica máscara binária GT
+        area_pred = area_pred * (seg_labels.squeeze(1) > 0).astype('float32')  # Máscara binária via produto de Hadamard
+        area_gt = data['areaLabel'].squeeze(1)                    # (N,H,W), sem Hadamard aqui
         mse = losses['types'][1]
         coef_mse = losses['coef'][1]
         area_loss = mse(area_pred, area_gt)  # MSE(logits (N,H,W), areaLabel (N,H,W))
