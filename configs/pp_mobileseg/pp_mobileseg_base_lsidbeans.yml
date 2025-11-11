@@ -17,8 +17,8 @@ train_dataset:
     #   scale_step_size: 0.125
     # - type: RandomPaddingCrop
     #   crop_size: [512, 512]  # ajustado para imagens menores
-    # - type: RandomHorizontalFlip
-    # - type: RandomVerticalFlip  # útil para folhas
+    - type: RandomHorizontalFlip
+    - type: RandomVerticalFlip  # útil para folhas
     # - type: RandomDistort
     #   brightness_range: 0.25
     #   contrast_range: 0.25
@@ -42,7 +42,7 @@ optimizer:
 
 lr_scheduler:
   type: PolynomialDecay
-  learning_rate: 0.008
+  learning_rate: 0.0008
   end_lr: 0
   power: 1.0
   warmup_iters: 1000
@@ -52,8 +52,8 @@ loss:
   types:
     - type: CrossEntropyLoss
     - type: MSELoss
-      reduction: none
-  # Coefs must be a list matching the number of loss types (seg, area).
+      reduction: none # para aplicar máscara manualmente
+
   coef: [1.0, 1.0]  # [seg_coef, area_coef]
 
 model:
@@ -80,7 +80,7 @@ log_config:
 val_dataset_config:
   val_interval: 200
   early_stop:
-    patience: 24
+    patience: 18
     min_improvement: 0.001
 
 
