@@ -127,48 +127,47 @@ class PPMobileSeg(nn.Layer):
         return [seg_logits, area_logits]
 
     def loss_computation(self, logits_list, losses, data):
-        """
-        Usa CE para segmentação e MSE mascarada para área.
-        losses['types'][0] deve ser CrossEntropyLoss (labels int64 em (N,1,H,W)).
-        """
-        check_logits_losses(logits_list, losses)
-        assert len(logits_list) == 2, "Esperado [seg_logits, area_logits]"
-
+        #Perda da segmentação
         seg_logits, area_logits = logits_list
-
-        # 1) Cross-entropy de segmentação
-        seg_labels = data['label'].astype('int64')              # (N,1,H,W)
+        seg_labels = data['label'].astype('int64')
         crossEntropy = losses['types'][0]
         coef_ce = losses['coef'][0]
-        seg_loss = crossEntropy(seg_logits, seg_labels)                   # CE(logits (N,C,H,W), label (N,1,H,W))
+        seg_loss = crossEntropy(seg_logits, seg_labels)
 
-        # 2) MSE de área (canal único), mascarada por pixels de classe > 0
-        leaf_mask = (seg_logits.argmax(axis=1, keepdim=True) == 1).astype('float32')  # Máscara binária para classe da folha
-        square_mask = (seg_logits.argmax(axis=1, keepdim=True) == 2).astype('float32')  # Máscara binária para classe do quadrado
-        area_gt = data['areaLabel'].astype('float32')          # (N,H,W)
+        #Perda da área (MSE com máscara)
+        # 1. MÁSCARAS BINÁRIAS DAS PREVISÕES
+        leaf_mask = (seg_logits.argmax(axis=1, keepdim=True) == 1).astype('float32')
+        square_mask = (seg_logits.argmax(axis=1, keepdim=True) == 2).astype('float32')
+
+        # 2. GABARITO (Ground Truth)
+        area_gt = data['areaLabel'].astype('float32')
         if area_gt.ndim == 3:
             area_gt = area_gt.unsqueeze(1)
-
+    
         coef_mse = losses['coef'][1]
-
-        leaf_pred = area_logits * leaf_mask  # Aplica máscara binária via produto de Hadamard
-        square_pred = area_logits * square_mask  # Aplica máscara binária via produto de Hadamard
-        leaf_label = area_gt * (seg_labels == 1).astype('float32')
-        square_label = area_gt * (seg_labels == 2).astype('float32')
-
-        leaf_error = leaf_pred - leaf_label
+    
+        # 3. ZERAR ERRO ONDE NÃO HÁ INTERESSE, USANDO AS MÁSCARAS DA PREVISÃO
+        # Produto de Hadamard para manter erros apenas nas regiões de interesse
+        leaf_error = (area_logits - area_gt) * leaf_mask
+        square_error = (area_logits - area_gt) * square_mask
+    
         leaf_error_sq = paddle.square(leaf_error)
-        leaf_mse = paddle.mean(leaf_error_sq)
+        square_error_sq = paddle.square(square_error)
 
-        square_error = square_pred - square_label
-        square_error_sq = paddle.square(square_error)    
-        square_mse = paddle.mean(square_error_sq)
+        # 4. CALCULAR A MÉDIA CORRETAMENTE (Soma / Contagem)
+        epsilon = 1e-6 # Evitar divisão por zero
+    
+        # Contar quantos pixels foram previstos como folha/quadrado
+        leaf_pixel_count = paddle.sum(leaf_mask) + epsilon
+        square_pixel_count = paddle.sum(square_mask) + epsilon
+
+        # Calcular a média apenas nesses pixels
+        leaf_mse = paddle.sum(leaf_error_sq) / leaf_pixel_count
+        square_mse = paddle.sum(square_error_sq) / square_pixel_count
 
         area_loss = leaf_mse + square_mse
-
-
-        return [coef_ce * seg_loss, coef_mse * area_loss]
     
+        return [coef_ce * seg_loss, coef_mse * area_loss]
     
 class PPMobileSegHead(nn.Layer): #decoder aqui
     # Cabeça simples de segmentação:
