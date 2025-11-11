@@ -204,8 +204,8 @@ def predict(model,
                         else:
                             amap_proc = amap
 
-                        leaf_area_val = float(np.sum(amap_proc[leaf_mask])) if np.any(leaf_mask) else 0.0
-                        square_area_val = float(np.sum(amap_proc[square_mask])) if np.any(square_mask) else 0.0
+                        leaf_area_val = float(np.sum(amap_proc[leaf_mask])/1000.0) if np.any(leaf_mask) else 0.0
+                        square_area_val = float(np.sum(amap_proc[square_mask])/1000.0) if np.any(square_mask) else 0.0
 
                         logger.info("Predicted areas for %s: leaf=%.4f  square=%.4f",
                                     im_file, leaf_area_val, square_area_val)
@@ -221,8 +221,8 @@ def predict(model,
                         # Overlay text on the added_image for visualization (top-left)
                         try:
                             # added_image is a numpy array (H,W,3) in BGR; draw text top-left
-                            text1 = f"Leaf: {leaf_area_val:.2f}"
-                            text2 = f"Square: {square_area_val:.2f}"
+                            text1 = f"Leaf: {leaf_area_val:.3f}"
+                            text2 = f"Square: {square_area_val:.3f}"
                             font = cv2.FONT_HERSHEY_SIMPLEX
                             scale = 0.8
                             thickness = 2

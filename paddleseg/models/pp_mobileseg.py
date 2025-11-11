@@ -143,16 +143,30 @@ class PPMobileSeg(nn.Layer):
         seg_loss = crossEntropy(seg_logits, seg_labels)                   # CE(logits (N,C,H,W), label (N,1,H,W))
 
         # 2) MSE de área (canal único), mascarada por pixels de classe > 0
-        area_argmax = area_logits.argmax(axis=1).astype('float32')                        # (N,H,W)
-        seg_argmax = seg_logits.argmax(axis=1).astype('float32')                        # (N,H,W)
-        leaf_mask = (seg_argmax == 1).astype('float32')  # Máscara binária para classe da folha
-        square_mask = (seg_argmax == 2).astype('float32')/2  # Máscara binária para classe do quadrado
+        leaf_mask = (seg_logits.argmax(axis=1, keepdim=True) == 1).astype('float32')  # Máscara binária para classe da folha
+        square_mask = (seg_logits.argmax(axis=1, keepdim=True) == 2).astype('float32')  # Máscara binária para classe do quadrado
         area_gt = data['areaLabel'].astype('float32')          # (N,H,W)
-        area_pred = area_argmax * (leaf_mask + square_mask)  # Aplica máscara binária via produto de Hadamard
-        mse = losses['types'][1]
+        if area_gt.ndim == 3:
+            area_gt = area_gt.unsqueeze(1)
+
+        leaf_pred = area_logits * leaf_mask  # Aplica máscara binária via produto de Hadamard
+        square_pred = area_logits * square_mask  # Aplica máscara binária via produto de Hadamard
+        area_pred = leaf_pred + square_pred  # Combina previsões mascaradas
+
+        #MSE manual somando apenas pixels de folha e quadrado
         coef_mse = losses['coef'][1]
-        area_loss = mse(area_pred, area_gt)  # MSE(logits (N,H,W), areaLabel (N,H,W))
-        # area_loss = (area_pred - area_gt) ** 2
+        # Ensure shapes: area_pred (N,1,H,W), area_gt (N,1,H,W), mask (N,1,H,W)
+        mask = (leaf_mask + square_mask).astype('float32')
+        diff = area_pred - area_gt
+        sq = diff * diff * mask
+        sum_sq = paddle.sum(sq)
+        num_pos = paddle.sum(mask)
+        # If there are masked pixels, average over them; otherwise fallback to global mean
+        # Add small eps to avoid division by zero in graph mode.
+        eps = 1e-6
+        area_loss = paddle.where(num_pos > 0,
+                                 sum_sq / (num_pos + eps),
+                                 paddle.mean(sq))
 
         return [coef_ce * seg_loss, coef_mse * area_loss]
     
