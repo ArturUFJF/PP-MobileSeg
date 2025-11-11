@@ -242,8 +242,8 @@ def predict(model,
                     # Overlay numeric area values onto the color map (bottom-right)
                     try:
                         # Compute text strings
-                        text1 = f"Leaf: {leaf_area_val:.2f}"
-                        text2 = f"Square: {square_area_val:.2f}"
+                        text1 = f"Leaf: {leaf_area_val:.3f}"
+                        text2 = f"Square: {square_area_val:.3f}"
                         h_c, w_c = cmap_bgr.shape[:2]
                         margin = 10
                         font = cv2.FONT_HERSHEY_SIMPLEX
