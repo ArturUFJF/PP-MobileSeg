@@ -149,24 +149,23 @@ class PPMobileSeg(nn.Layer):
         if area_gt.ndim == 3:
             area_gt = area_gt.unsqueeze(1)
 
+        coef_mse = losses['coef'][1]
+
         leaf_pred = area_logits * leaf_mask  # Aplica máscara binária via produto de Hadamard
         square_pred = area_logits * square_mask  # Aplica máscara binária via produto de Hadamard
-        area_pred = leaf_pred + square_pred  # Combina previsões mascaradas
+        leaf_label = area_gt * (seg_labels == 1).astype('float32')
+        square_label = area_gt * (seg_labels == 2).astype('float32')
 
-        #MSE manual somando apenas pixels de folha e quadrado
-        coef_mse = losses['coef'][1]
-        # Ensure shapes: area_pred (N,1,H,W), area_gt (N,1,H,W), mask (N,1,H,W)
-        mask = (leaf_mask + square_mask).astype('float32')
-        diff = area_pred - area_gt
-        sq = diff * diff * mask
-        sum_sq = paddle.sum(sq)
-        num_pos = paddle.sum(mask)
-        # If there are masked pixels, average over them; otherwise fallback to global mean
-        # Add small eps to avoid division by zero in graph mode.
-        eps = 1e-6
-        area_loss = paddle.where(num_pos > 0,
-                                 sum_sq / (num_pos + eps),
-                                 paddle.mean(sq))
+        leaf_error = leaf_pred - leaf_label
+        leaf_error_sq = paddle.square(leaf_error)
+        leaf_mse = paddle.mean(leaf_error_sq)
+
+        square_error = square_pred - square_label
+        square_error_sq = paddle.square(square_error)    
+        square_mse = paddle.mean(square_error_sq)
+
+        area_loss = leaf_mse + square_mse
+
 
         return [coef_ce * seg_loss, coef_mse * area_loss]
     
