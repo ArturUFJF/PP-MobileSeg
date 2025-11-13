@@ -18,6 +18,7 @@ import time
 import yaml
 import json
 from collections import deque
+import numpy as np
 import shutil
 from copy import deepcopy
 
@@ -184,6 +185,8 @@ def train(model,
     best_mean_iou = -1.0
     best_ema_mean_iou = -1.0
     best_model_iter = -1
+    # Best total relative error (leaf + marker). Initialized large so first eval wins.
+    best_total_rer = float('inf')
     reader_cost_averager = TimeAverager()
     batch_cost_averager = TimeAverager()
     save_models = deque()
@@ -339,15 +342,20 @@ def train(model,
                 if test_config is None:
                     test_config = {}
 
-                mean_iou, acc, _, _, _ = evaluate(model,
-                                                  val_dataset,
-                                                  num_workers=num_workers,
-                                                  precision=precision,
-                                                  amp_level=amp_level,
-                                                  **test_config)
+                (mean_iou, acc, _, _, _, avg_RER_leaf, std_RER_leaf,
+                 avg_RER_marker, std_RER_marker) = evaluate(
+                    model,
+                    val_dataset,
+                    num_workers=num_workers,
+                    precision=precision,
+                    amp_level=amp_level,
+                    **test_config)
 
                 if use_ema:
-                    ema_mean_iou, ema_acc, _, _, _ = evaluate(
+                    # evaluate now returns additional area RER statistics
+                    (ema_mean_iou, ema_acc, _, _, _, ema_avg_RER_leaf,
+                     ema_std_RER_leaf, ema_avg_RER_marker,
+                     ema_std_RER_marker) = evaluate(
                         ema_model,
                         val_dataset,
                         num_workers=num_workers,
@@ -357,9 +365,9 @@ def train(model,
 
                 model.train()
 
-            if (iter % save_interval == 0 or iter == iters) and local_rank == 0:
-                current_save_dir = os.path.join(save_dir,
-                                                "iter_{}".format(iter))
+                if (iter % save_interval == 0 or iter == iters) and local_rank == 0:
+                    current_save_dir = os.path.join(save_dir,
+                                                    "iter_{}".format(iter))
                 if not os.path.isdir(current_save_dir):
                     os.makedirs(current_save_dir)
                 paddle.save(model.state_dict(),
@@ -384,7 +392,10 @@ def train(model,
                     shutil.rmtree(model_to_remove)
 
                 if val_dataset is not None:
-                    states_dict = {'mIoU': mean_iou, 'Acc': acc, 'iter': iter}
+                    # states include evaluation metrics; also include area RER
+                    states_dict = {'mIoU': mean_iou, 'Acc': acc, 'iter': iter,
+                                   'avg_RER_leaf': avg_RER_leaf, 'std_RER_leaf': std_RER_leaf,
+                                   'avg_RER_marker': avg_RER_marker, 'std_RER_marker': std_RER_marker}
                     paddle.save(
                         states_dict,
                         os.path.join(current_save_dir, 'model.pdstates'))
@@ -395,11 +406,21 @@ def train(model,
                                              states_dict,
                                              done_flag=iter == iters)
 
-                    if mean_iou > best_mean_iou:
+                    # Select best model by smallest total relative error (leaf + marker averages)
+                    try:
+                        total_rer = float(avg_RER_leaf if not np.isnan(avg_RER_leaf) else 0.0) + float(avg_RER_marker if not np.isnan(avg_RER_marker) else 0.0)
+                    except Exception:
+                        total_rer = float('inf')
+
+                    if 'best_total_rer' not in locals():
+                        best_total_rer = float('inf')
+
+                    if total_rer < best_total_rer:
                         stop_count = 0
-                        best_mean_iou = mean_iou
+                        best_total_rer = total_rer
                         best_model_iter = iter
                         best_model_dir = os.path.join(save_dir, "best_model")
+                        os.makedirs(best_model_dir, exist_ok=True)
                         paddle.save(
                             model.state_dict(),
                             os.path.join(best_model_dir, 'model.pdparams'))
@@ -414,18 +435,19 @@ def train(model,
                                                  "best_model",
                                                  states_dict,
                                                  done_flag=iter == iters)
-                    elif mean_iou < best_mean_iou:
+                    else:
+                        # If not improved by total RER, increase stop count
                         stop_count += 1
 
                     if early_stop_intervals is not None and stop_count >= early_stop_intervals:
                         stop_status = True
                         logger.info(
-                            'Early stopping at iter {}. The best mean IoU is {:.4f}.'
-                            .format(iter, best_mean_iou))
+                            'Early stopping at iter {}. The best total RER (leaf+marker) is {:.4f}%.'
+                            .format(iter, best_total_rer))
                     else:
                         logger.info(
-                            '[EVAL] The model with the best validation mIoU ({:.4f}) was saved at iter {}.'
-                            .format(best_mean_iou, best_model_iter))
+                            '[EVAL] The model with the best validation total RER ({:.4f}%%) was saved at iter {}.'
+                            .format(best_total_rer, best_model_iter))
 
                     if use_ema:
                         ema_states_dict = {

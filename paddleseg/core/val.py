@@ -99,6 +99,12 @@ def evaluate(model,
     batch_cost_averager = TimeAverager()
     batch_start = time.time()
     with paddle.no_grad():
+        # Lists to collect per-sample true/pred sums for area evaluation
+        true_leaf = []
+        pred_leaf = []
+        true_marker = []
+        pred_marker = []
+
         for iter, data in enumerate(loader):
             reader_cost_averager.record(time.time() - batch_start)
             label = data['label'].astype('int64')
@@ -155,7 +161,7 @@ def evaluate(model,
                             crop_size=crop_size,
                             use_multilabel=use_multilabel)
                 else:
-                    pred, logits = infer.inference(
+                        pred, logits = infer.inference(
                         model,
                         data['img'],
                         trans_info=data['trans_info'],
@@ -163,6 +169,65 @@ def evaluate(model,
                         stride=stride,
                         crop_size=crop_size,
                         use_multilabel=use_multilabel)
+
+                # --- Area prediction evaluation (per-sample sums) ---
+                try:
+                    # data may provide a ground-truth per-pixel area map under 'areaLabel'
+                    if 'areaLabel' in data:
+                        area_gt_batch = data['areaLabel']
+                        # convert to numpy if paddle Tensor
+                        if isinstance(area_gt_batch, paddle.Tensor):
+                            area_gt_batch = area_gt_batch.numpy()
+
+                        # Attempt to interpret `logits` as an area prediction map
+                        area_pred_batch = None
+                        if isinstance(logits, paddle.Tensor):
+                            lp = logits.numpy()
+                        elif isinstance(logits, np.ndarray):
+                            lp = logits
+                        else:
+                            lp = None
+
+                        if lp is not None:
+                            # handle shapes: (N,1,H,W) or (N,H,W)
+                            if lp.ndim == 4 and lp.shape[1] == 1:
+                                area_pred_batch = np.squeeze(lp, axis=1)
+                            elif lp.ndim == 3:
+                                area_pred_batch = lp
+
+                        if area_pred_batch is not None:
+                            batch_size = area_gt_batch.shape[0]
+                            for b in range(batch_size):
+                                # label may be paddle Tensor; convert to numpy and squeeze to 2D
+                                lab = label[b]
+                                if isinstance(lab, paddle.Tensor):
+                                    lab = lab.numpy()
+                                else:
+                                    lab = np.array(lab)
+                                lab = np.squeeze(lab)
+
+                                # ensure ground-truth and prediction are 2D arrays (H,W)
+                                ag = area_gt_batch[b]
+                                ag = np.squeeze(ag)
+                                ap = area_pred_batch[b]
+                                ap = np.squeeze(ap)
+
+                                # masks for leaf (1) and marker/square (2)
+                                leaf_mask = (lab == 1)
+                                marker_mask = (lab == 2)
+
+                                true_leaf_val = float(np.sum(ag[leaf_mask])) if np.any(leaf_mask) else 0.0
+                                pred_leaf_val = float(np.sum(ap[leaf_mask])) if np.any(leaf_mask) else 0.0
+
+                                true_marker_val = float(np.sum(ag[marker_mask])) if np.any(marker_mask) else 0.0
+                                pred_marker_val = float(np.sum(ap[marker_mask])) if np.any(marker_mask) else 0.0
+
+                                true_leaf.append(true_leaf_val)
+                                pred_leaf.append(pred_leaf_val)
+                                true_marker.append(true_marker_val)
+                                pred_marker.append(pred_marker_val)
+                except Exception:
+                    logger.error('Failed computing per-sample area sums', exc_info=True)
 
             intersect_area, pred_area, label_area = metrics.calculate_area(
                 pred,
@@ -227,6 +292,35 @@ def evaluate(model,
     kappa = metrics.kappa(*metrics_input)
     class_dice, mdice = metrics.dice(*metrics_input)
 
+    # --- Compute relative error statistics for area predictions if available ---
+    try:
+        if len(true_leaf) > 0:
+            true_leaf = np.array(true_leaf, dtype=np.float32)
+            pred_leaf = np.array(pred_leaf, dtype=np.float32)
+            true_marker = np.array(true_marker, dtype=np.float32)
+            pred_marker = np.array(pred_marker, dtype=np.float32)
+
+            # relative error in percent, ignoring samples with true==0
+            rer_leaf = np.where(true_leaf > 0.0, np.abs(true_leaf - pred_leaf) / true_leaf * 100.0, np.nan)
+            rer_marker = np.where(true_marker > 0.0, np.abs(true_marker - pred_marker) / true_marker * 100.0, np.nan)
+
+            avg_RER_leaf = float(np.nanmean(rer_leaf)) if np.any(~np.isnan(rer_leaf)) else float('nan')
+            std_RER_leaf = float(np.nanstd(rer_leaf)) if np.any(~np.isnan(rer_leaf)) else float('nan')
+
+            avg_RER_marker = float(np.nanmean(rer_marker)) if np.any(~np.isnan(rer_marker)) else float('nan')
+            std_RER_marker = float(np.nanstd(rer_marker)) if np.any(~np.isnan(rer_marker)) else float('nan')
+        else:
+            avg_RER_leaf = float('nan')
+            std_RER_leaf = float('nan')
+            avg_RER_marker = float('nan')
+            std_RER_marker = float('nan')
+    except Exception:
+        logger.exception('Failed computing area relative-error statistics')
+        avg_RER_leaf = float('nan')
+        std_RER_leaf = float('nan')
+        avg_RER_marker = float('nan')
+        std_RER_marker = float('nan')
+
     if auc_roc:
         auc_roc = metrics.auc_roc(
             logits_all, label_all, num_classes=eval_dataset.num_classes)
@@ -241,4 +335,7 @@ def evaluate(model,
         logger.info("[EVAL] Class Precision: \n" + str(
             np.round(class_precision, 4)))
         logger.info("[EVAL] Class Recall: \n" + str(np.round(class_recall, 4)))
-    return miou, acc, class_iou, class_precision, kappa
+        logger.info("[EVAL] Area RER (leaf)  : avg={:.4f}%  std={:.4f}%".format(avg_RER_leaf, std_RER_leaf))
+        logger.info("[EVAL] Area RER (marker): avg={:.4f}%  std={:.4f}%".format(avg_RER_marker, std_RER_marker))
+    # Return classic metrics plus area RER statistics
+    return miou, acc, class_iou, class_precision, kappa, avg_RER_leaf, std_RER_leaf, avg_RER_marker, std_RER_marker
