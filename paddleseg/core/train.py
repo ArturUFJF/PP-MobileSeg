@@ -408,7 +408,7 @@ def train(model,
 
                     # Select best model by smallest total relative error (leaf + marker averages)
                     try:
-                        total_rer = float(avg_RER_leaf if not np.isnan(avg_RER_leaf) else 0.0) + float(avg_RER_marker if not np.isnan(avg_RER_marker) else 0.0)
+                        total_rer = float(avg_RER_leaf if not np.isnan(avg_RER_leaf) else 0.0) + float(avg_RER_marker if not np.isnan(avg_RER_marker) else 0.0) + float(std_RER_leaf if not np.isnan(std_RER_leaf) else 0.0) + float(std_RER_marker if not np.isnan(std_RER_marker) else 0.0)
                     except Exception:
                         total_rer = float('inf')
 

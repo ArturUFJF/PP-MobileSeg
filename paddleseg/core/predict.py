@@ -18,6 +18,10 @@ import math
 import cv2
 import numpy as np
 import paddle
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+from matplotlib.colors import LinearSegmentedColormap
 
 from paddleseg import utils
 from paddleseg.core import infer
@@ -43,6 +47,37 @@ def preprocess(im_path, transforms):
     data['img'] = data['img'][np.newaxis, ...]
     data['img'] = paddle.to_tensor(data['img'])
     return data
+
+
+_base_cmap = plt.cm.jet(np.linspace(0, 1, 256))
+_base_cmap[0] = [0, 0, 0, 1]
+AREA_CMAP = LinearSegmentedColormap.from_list('pp_mobile_seg_area', _base_cmap, 256)
+
+
+def save_area_heatmap(data,
+                      out_path,
+                      cmap,
+                      vmin,
+                      vmax,
+                      leaf_area=None,
+                      square_area=None):
+    fig, ax = plt.subplots(figsize=(4.5, 4.5))
+    im = ax.imshow(data, cmap=cmap, vmin=vmin, vmax=vmax)
+    ax.set_axis_off()
+    cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    cbar.ax.set_ylabel('Area value', rotation=270, labelpad=12)
+    if leaf_area is not None and square_area is not None:
+        ax.text(0.02,
+                0.02,
+                f"Leaf: {leaf_area:.3f}\nSquare: {square_area:.3f}",
+                transform=ax.transAxes,
+                fontsize=9,
+                color='white',
+                verticalalignment='bottom',
+                bbox=dict(facecolor='black', alpha=0.5, pad=3))
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=300, bbox_inches='tight')
+    plt.close(fig)
 
 
 def predict(model,
@@ -178,19 +213,10 @@ def predict(model,
                         logger.info("area_map found for %s: shape=%s dtype=%s min=%f max=%f",
                                     im_file, amap.shape, amap.dtype, vmin, vmax)
                     except Exception:
+                        vmin = 0.0
+                        vmax = 0.0
                         logger.info("area_map found for %s: shape=%s dtype=%s (min/max unavailable)",
                                     im_file, amap.shape, amap.dtype)
-
-                    eps = 1e-6
-                    try:
-                        denom = (vmax - vmin) if (vmax - vmin) > eps else eps
-                        amap_norm = (amap - vmin) / denom
-                    except Exception:
-                        amap_norm = np.zeros_like(amap)
-
-                    amap_8 = (np.clip(amap_norm, 0.0, 1.0) * 255.0).astype('uint8')
-                    # applyColorMap expects BGR output; use JET (good for scalar fields)
-                    cmap_bgr = cv2.applyColorMap(amap_8, cv2.COLORMAP_JET)
 
                     # Compute numeric areas for leaf (class=1) and square (class=2)
                     try:
@@ -239,63 +265,32 @@ def predict(model,
                     except Exception:
                         logger.exception("Failed computing numeric areas for %s", im_file)
 
-                    # Overlay numeric area values onto the color map (bottom-right)
-                    try:
-                        # Compute text strings
-                        text1 = f"Leaf: {leaf_area_val:.3f}"
-                        text2 = f"Square: {square_area_val:.3f}"
-                        h_c, w_c = cmap_bgr.shape[:2]
-                        margin = 10
-                        font = cv2.FONT_HERSHEY_SIMPLEX
-                        scale = max(0.5, min(w_c, h_c) / 800.0)  # adaptive scale
-                        thickness = max(1, int(round(scale * 2)))
-                        line_spacing = int(round(6 * scale))
-
-                        lines = [text1, text2]
-                        # compute widths/heights
-                        sizes = [cv2.getTextSize(l, font, scale, thickness)[0] for l in lines]
-                        max_w = max(s[0] for s in sizes)
-                        total_h = sum(s[1] for s in sizes) + (len(sizes) - 1) * line_spacing
-
-                        # determine padding and inset so the box doesn't touch edges
-                        padding = max(8, int(round(min(w_c, h_c) * 0.01)))
-                        inset = max(10, int(round(min(w_c, h_c) * 0.03)))
-
-                        # compute rectangle coordinates: inset from right/bottom
-                        rect_right = w_c - margin - inset
-                        rect_bottom = h_c - margin - inset
-                        rect_left = rect_right - (max_w + 2 * padding)
-                        rect_top = rect_bottom - (total_h + 2 * padding)
-
-                        # clamp to image bounds
-                        rect_left = max(0, int(rect_left))
-                        rect_top = max(0, int(rect_top))
-                        rect_right = min(w_c, int(rect_right))
-                        rect_bottom = min(h_c, int(rect_bottom))
-
-                        overlay = cmap_bgr.copy()
-                        cv2.rectangle(overlay, (rect_left, rect_top), (rect_right, rect_bottom), (0, 0, 0), -1)
-                        alpha = 0.60
-                        cv2.addWeighted(overlay, alpha, cmap_bgr, 1 - alpha, 0, cmap_bgr)
-
-                        # put each line starting at rect_left + padding, rect_top + padding + first line height
-                        x_text = rect_left + padding
-                        cur_y = rect_top + padding
-                        for idx, l in enumerate(lines):
-                            text_h = sizes[idx][1]
-                            baseline_y = cur_y + text_h
-                            cv2.putText(cmap_bgr, l, (x_text, baseline_y), font, scale, (0, 0, 0), thickness + 2, cv2.LINE_AA)
-                            cv2.putText(cmap_bgr, l, (x_text, baseline_y), font, scale, (255, 255, 255), thickness, cv2.LINE_AA)
-                            cur_y += text_h + line_spacing
-                    except Exception:
-                        logger.exception("Failed overlaying area text on color map for %s", im_file)
-
-                    # Save color map as PNG
+                    # Save color map as PNG with Matplotlib colorbar
                     area_out_path = os.path.join(
                         area_saved_dir, os.path.splitext(im_file)[0] + "_area.png")
                     mkdir(area_out_path)
-                    # cv2.imwrite writes BGR correctly
-                    cv2.imwrite(area_out_path, cmap_bgr)
+
+                    display_map = amap_proc / 1000.0
+                    if np.all(np.isnan(display_map)):
+                        display_map = np.zeros_like(display_map)
+                        display_vmin, display_vmax = 0.0, 1.0
+                    else:
+                        display_vmin = float(np.nanmin(display_map))
+                        display_vmax = float(np.nanmax(display_map))
+                        if not np.isfinite(display_vmin):
+                            display_vmin = 0.0
+                        if not np.isfinite(display_vmax):
+                            display_vmax = display_vmin + 1.0
+                    if display_vmax - display_vmin < 1e-6:
+                        display_vmax = display_vmin + 1e-6
+
+                    save_area_heatmap(data=display_map,
+                                      out_path=area_out_path,
+                                      cmap=AREA_CMAP,
+                                      vmin=display_vmin,
+                                      vmax=display_vmax,
+                                      leaf_area=leaf_area_val,
+                                      square_area=square_area_val)
                 else:
                     logger.info("No area_map for %s (skipping area visualization)", im_file)
             except Exception as e:
