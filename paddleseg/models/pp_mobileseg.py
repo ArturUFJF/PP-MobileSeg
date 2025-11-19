@@ -235,8 +235,10 @@ class AreaSegHead(nn.Layer): #decoder aqui
             stride=1,
             groups=self.last_channels if use_dw else 1,
             act=nn.ReLU)
+        
         # Regularização para reduzir overfitting
         self.dropout = nn.Dropout2D(dropout_ratio)
+        
         # Projeção final para o espaço de classes (logits por classe)
         self.conv_seg = nn.Conv2D(
             self.last_channels, num_classes, kernel_size=1)
@@ -245,6 +247,8 @@ class AreaSegHead(nn.Layer): #decoder aqui
         # x aqui é o mapa de features do backbone (espera-se tensor 4D)
         x = self.linear_fuse(x)  # Ajuste/normalização das features com activação ReLU
         x = self.dropout(x)  # Dropout espacial
+        # conv2D
+        # dropout
         x = self.conv_seg(x)  # Logits por classe (B, num_classes, h, w)
         return x
     
