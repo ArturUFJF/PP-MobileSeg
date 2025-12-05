@@ -88,6 +88,8 @@ def train(model,
           logger=setup_logger(__file__),
           print_mem_info=False,
           shuffle=True,
+          eval_mode='seg_area',
+          train_area=True,
           **kwargs):
     """
     Launch training.
@@ -130,6 +132,10 @@ def train(model,
     model.train()
     nranks = paddle.distributed.ParallelEnv().nranks
     local_rank = paddle.distributed.ParallelEnv().local_rank
+
+    # normalize evaluation mode
+    if isinstance(eval_mode, str):
+        eval_mode = eval_mode.lower()
 
     start_iter = 0
     stop_count = 0
@@ -227,18 +233,34 @@ def train(model,
                         custom_black_list={'bilinear_interp_v2'}):
                     logits_list = ddp_model(images) if nranks > 1 else model(
                         images)
+
+                    # Optionally disable area-head training by filtering logits/losses
+                    effective_logits_list = logits_list
+                    effective_losses = losses
+                    if not train_area:
+                        # Keep only the first output (segmentation) and its loss
+                        if isinstance(logits_list, (list, tuple)) and len(
+                                logits_list) > 1:
+                            effective_logits_list = [logits_list[0]]
+                        else:
+                            effective_logits_list = logits_list
+                        effective_losses = {
+                            'types': losses['types'][:1],
+                            'coef': losses['coef'][:1]
+                        }
+
                     if nranks > 1 and hasattr(ddp_model._layers,
                                               'loss_computation'):
                         loss_list = ddp_model._layers.loss_computation(
-                            logits_list, losses, data)
+                            effective_logits_list, effective_losses, data)
                     elif nranks == 1 and hasattr(model, 'loss_computation'):
                         loss_list = model.loss_computation(
-                            logits_list, losses, data)
+                            effective_logits_list, effective_losses, data)
                     else:
-                        loss_list = loss_computation(logits_list=logits_list,
+                        loss_list = loss_computation(logits_list=effective_logits_list,
                                                      labels=labels,
                                                      edges=edges,
-                                                     losses=losses)
+                                                     losses=effective_losses)
                     loss = sum(loss_list)
 
                 scaled = scaler.scale(loss)  # scale the loss
@@ -251,18 +273,32 @@ def train(model,
             else:
                 logits_list = ddp_model(images) if nranks > 1 else model(images)
 
+                # Optionally disable area-head training by filtering logits/losses
+                effective_logits_list = logits_list
+                effective_losses = losses
+                if not train_area:
+                    if isinstance(logits_list, (list, tuple)) and len(
+                            logits_list) > 1:
+                        effective_logits_list = [logits_list[0]]
+                    else:
+                        effective_logits_list = logits_list
+                    effective_losses = {
+                        'types': losses['types'][:1],
+                        'coef': losses['coef'][:1]
+                    }
+
                 if nranks > 1 and hasattr(ddp_model._layers,
                                           'loss_computation'):
                     loss_list = ddp_model._layers.loss_computation(
-                        logits_list, losses, data)
+                        effective_logits_list, effective_losses, data)
                 elif nranks == 1 and hasattr(model, 'loss_computation'):
-                    loss_list = model.loss_computation(logits_list, losses,
+                    loss_list = model.loss_computation(effective_logits_list, effective_losses,
                                                        data)
                 else:
-                    loss_list = loss_computation(logits_list=logits_list,
+                    loss_list = loss_computation(logits_list=effective_logits_list,
                                                  labels=labels,
                                                  edges=edges,
-                                                 losses=losses)
+                                                 losses=effective_losses)
                 loss = sum(loss_list)
                 loss.backward()
                 optimizer.step()
@@ -365,141 +401,226 @@ def train(model,
 
                 model.train()
 
-                if (iter % save_interval == 0 or iter == iters) and local_rank == 0:
-                    current_save_dir = os.path.join(save_dir,
-                                                    "iter_{}".format(iter))
-                if not os.path.isdir(current_save_dir):
-                    os.makedirs(current_save_dir)
-                paddle.save(model.state_dict(),
-                            os.path.join(current_save_dir, 'model.pdparams'))
-                paddle.save(optimizer.state_dict(),
-                            os.path.join(current_save_dir, 'model.pdopt'))
-                if uniform_output_enabled:
-                    export(cli_args, model, current_save_dir)
-                    gc.collect()
+                # Prepare save directory name
+                current_save_dir = os.path.join(save_dir, "iter_{}".format(iter))
 
-                if use_ema:
-                    paddle.save(
-                        ema_model.state_dict(),
-                        os.path.join(current_save_dir, 'ema_model.pdparams'))
+                # Only rank 0 performs file writes and checkpoint management
+                if local_rank == 0:
+                    if not os.path.isdir(current_save_dir):
+                        os.makedirs(current_save_dir)
+                    paddle.save(model.state_dict(),
+                                os.path.join(current_save_dir, 'model.pdparams'))
+                    paddle.save(optimizer.state_dict(),
+                                os.path.join(current_save_dir, 'model.pdopt'))
                     if uniform_output_enabled:
-                        export(cli_args, ema_model, current_save_dir, use_ema)
+                        export(cli_args, model, current_save_dir)
                         gc.collect()
 
-                save_models.append(current_save_dir)
-                if len(save_models) > keep_checkpoint_max > 0:
-                    model_to_remove = save_models.popleft()
-                    shutil.rmtree(model_to_remove)
-
-                if val_dataset is not None:
-                    # states include evaluation metrics; also include area RER
-                    states_dict = {'mIoU': mean_iou, 'Acc': acc, 'iter': iter,
-                                   'avg_RER_leaf': avg_RER_leaf, 'std_RER_leaf': std_RER_leaf,
-                                   'avg_RER_marker': avg_RER_marker, 'std_RER_marker': std_RER_marker}
-                    paddle.save(
-                        states_dict,
-                        os.path.join(current_save_dir, 'model.pdstates'))
-                    if uniform_output_enabled:
-                        save_model_info(states_dict, current_save_dir)
-                        update_train_results(cli_args,
-                                             "iter_{}".format(iter),
-                                             states_dict,
-                                             done_flag=iter == iters)
-
-                    # Select best model by smallest total relative error (leaf + marker averages)
-                    try:
-                        total_rer = float(avg_RER_leaf if not np.isnan(avg_RER_leaf) else 0.0) + float(avg_RER_marker if not np.isnan(avg_RER_marker) else 0.0) + float(std_RER_leaf if not np.isnan(std_RER_leaf) else 0.0) + float(std_RER_marker if not np.isnan(std_RER_marker) else 0.0)
-                    except Exception:
-                        total_rer = float('inf')
-
-                    if 'best_total_rer' not in locals():
-                        best_total_rer = float('inf')
-
-                    if total_rer < best_total_rer:
-                        stop_count = 0
-                        best_total_rer = total_rer
-                        best_model_iter = iter
-                        best_model_dir = os.path.join(save_dir, "best_model")
-                        os.makedirs(best_model_dir, exist_ok=True)
-                        paddle.save(
-                            model.state_dict(),
-                            os.path.join(best_model_dir, 'model.pdparams'))
-                        paddle.save(
-                            states_dict,
-                            os.path.join(best_model_dir, 'model.pdstates'))
-                        if uniform_output_enabled:
-                            export(cli_args, model, best_model_dir)
-                            gc.collect()
-                            save_model_info(states_dict, best_model_dir)
-                            update_train_results(cli_args,
-                                                 "best_model",
-                                                 states_dict,
-                                                 done_flag=iter == iters)
-                    else:
-                        # If not improved by total RER, increase stop count
-                        stop_count += 1
-
-                    if early_stop_intervals is not None and stop_count >= early_stop_intervals:
-                        stop_status = True
-                        logger.info(
-                            'Early stopping at iter {}. The best total RER (leaf+marker) is {:.4f}%.'
-                            .format(iter, best_total_rer))
-                    else:
-                        logger.info(
-                            '[EVAL] The model with the best validation total RER ({:.4f}%%) was saved at iter {}.'
-                            .format(best_total_rer, best_model_iter))
-
                     if use_ema:
-                        ema_states_dict = {
-                            'mIoU': ema_mean_iou,
-                            'Acc': ema_acc,
-                            'iter': iter
+                        paddle.save(
+                            ema_model.state_dict(),
+                            os.path.join(current_save_dir,
+                                         'ema_model.pdparams'))
+                        if uniform_output_enabled:
+                            export(cli_args, ema_model, current_save_dir,
+                                   use_ema)
+                            gc.collect()
+
+                    save_models.append(current_save_dir)
+                    if len(save_models) > keep_checkpoint_max > 0:
+                        model_to_remove = save_models.popleft()
+                        shutil.rmtree(model_to_remove)
+
+                    if val_dataset is not None:
+                        # states include evaluation metrics; also include area RER
+                        states_dict = {
+                            'mIoU': mean_iou,
+                            'Acc': acc,
+                            'iter': iter,
+                            'avg_RER_leaf': avg_RER_leaf,
+                            'std_RER_leaf': std_RER_leaf,
+                            'avg_RER_marker': avg_RER_marker,
+                            'std_RER_marker': std_RER_marker
                         }
                         paddle.save(
-                            ema_states_dict,
-                            os.path.join(current_save_dir,
-                                         'ema_model.pdstates'))
+                            states_dict,
+                            os.path.join(current_save_dir, 'model.pdstates'))
+                        if uniform_output_enabled:
+                            save_model_info(states_dict, current_save_dir)
+                            update_train_results(cli_args,
+                                                 "iter_{}".format(iter),
+                                                 states_dict,
+                                                 done_flag=iter == iters)
 
-                        if ema_mean_iou > best_ema_mean_iou:
-                            best_ema_mean_iou = ema_mean_iou
-                            best_ema_model_iter = iter
-                            best_ema_model_dir = os.path.join(
-                                save_dir, "ema_best_model")
-                            paddle.save(
-                                ema_model.state_dict(),
-                                os.path.join(best_ema_model_dir,
-                                             'ema_model.pdparams'))
-                            paddle.save(
-                                ema_states_dict,
-                                os.path.join(best_ema_model_dir,
-                                             'ema_model.pdstates'))
-                            if uniform_output_enabled:
-                                export(cli_args, ema_model, best_ema_model_dir,
-                                       use_ema)
-                                gc.collect()
-                                save_model_info(ema_states_dict,
-                                                best_ema_model_dir)
-                                update_train_results(cli_args,
-                                                     "ema_best_model",
-                                                     ema_states_dict,
-                                                     done_flag=iter == iters,
-                                                     ema=use_ema)
-                        logger.info(
-                            '[EVAL] The EMA model with the best validation mIoU ({:.4f}) was saved at iter {}.'
-                            .format(best_ema_mean_iou, best_ema_model_iter))
+                        try:
+                            mean_iou = float(mean_iou)
+                        except Exception:
+                            mean_iou = float('-inf')
 
-                    if use_vdl:
-                        log_writer.add_scalar('Evaluate/mIoU', mean_iou, iter)
-                        log_writer.add_scalar('Evaluate/Acc', acc, iter)
+                        if 'best_mean_iou' not in locals():
+                            best_mean_iou = -1.0
+
+                        # mIoU-based model selection
+                        if eval_mode == 'seg':
+                            if mean_iou > best_mean_iou:
+                                stop_count = 0
+                                best_mean_iou = mean_iou
+                                best_model_iter = iter
+                                best_model_dir = os.path.join(save_dir,
+                                                              "best_model")
+                                os.makedirs(best_model_dir, exist_ok=True)
+                                paddle.save(
+                                    model.state_dict(),
+                                    os.path.join(best_model_dir,
+                                                 'model.pdparams'))
+                                paddle.save(
+                                    states_dict,
+                                    os.path.join(best_model_dir,
+                                                 'model.pdstates'))
+                                if uniform_output_enabled:
+                                    export(cli_args, model, best_model_dir)
+                                    gc.collect()
+                                    save_model_info(states_dict,
+                                                   best_model_dir)
+                                    update_train_results(cli_args,
+                                                         "best_model",
+                                                         states_dict,
+                                                         done_flag=iter == iters)
+                            else:
+                                # If not improved by mIoU, increase stop count
+                                stop_count += 1
+
+                        # Select best model by smallest total relative error (leaf + marker averages and std's)
+                        try:
+                            total_rer = float(
+                                avg_RER_leaf if not np.isnan(avg_RER_leaf) else 0.0) + float(
+                                    avg_RER_marker if not np.isnan(avg_RER_marker) else 0.0) + float(
+                                        std_RER_leaf if not np.isnan(std_RER_leaf) else 0.0) + float(
+                                            std_RER_marker if not np.isnan(std_RER_marker) else 0.0)
+                        except Exception:
+                            total_rer = float('inf')
+
+                        if 'best_total_rer' not in locals():
+                            best_total_rer = float('inf')
+
+                        if eval_mode == 'seg_area':
+                            if total_rer < best_total_rer:
+                                stop_count = 0
+                                best_total_rer = total_rer
+                                best_model_iter = iter
+                                best_model_dir = os.path.join(save_dir,
+                                                              "best_model")
+                                os.makedirs(best_model_dir, exist_ok=True)
+                                paddle.save(
+                                    model.state_dict(),
+                                    os.path.join(best_model_dir,
+                                                 'model.pdparams'))
+                                paddle.save(
+                                    states_dict,
+                                    os.path.join(best_model_dir,
+                                                 'model.pdstates'))
+                                if uniform_output_enabled:
+                                    export(cli_args, model, best_model_dir)
+                                    gc.collect()
+                                    save_model_info(states_dict,
+                                                   best_model_dir)
+                                    update_train_results(cli_args,
+                                                         "best_model",
+                                                         states_dict,
+                                                         done_flag=iter == iters)
+                            else:
+                                # If not improved by total RER, increase stop count
+                                stop_count += 1
+
+                        if early_stop_intervals is not None and stop_count >= early_stop_intervals:
+                            stop_status = True
+                            # Log depending on eval_mode
+                            if eval_mode == 'seg_area':
+                                logger.info(
+                                    'Early stopping at iter {}. The best total RER (leaf+marker) is {:.4f}%.'
+                                    .format(iter, best_total_rer))
+                            else:
+                                logger.info(
+                                    'Early stopping at iter {}. The best validation mIoU is {:.4f}.'
+                                    .format(iter, best_mean_iou))
+                        else:
+                            # Log only the relevant best-metric and only if a best has been set
+                            if eval_mode == 'seg':
+                                if best_model_iter != -1:
+                                    logger.info(
+                                        '[EVAL] The model with the best validation mIoU ({:.4f}) was saved at iter {}.'
+                                        .format(best_mean_iou, best_model_iter))
+                                else:
+                                    logger.info(
+                                        '[EVAL] No improvement in mIoU yet. Current best mIoU: {:.4f}, iter {}.'
+                                        .format(best_mean_iou, best_model_iter))
+                            elif eval_mode == 'seg_area':
+                                if best_model_iter != -1:
+                                    logger.info(
+                                        '[EVAL] The model with the best validation total RER ({:.4f}%%) was saved at iter {}.'
+                                        .format(best_total_rer, best_model_iter))
+                                else:
+                                    logger.info(
+                                        '[EVAL] No improvement in total RER yet. Current best total RER: {:.4f}%%, iter {}.'
+                                        .format(best_total_rer, best_model_iter))
+                            else:
+                                logger.info(
+                                    '[EVAL] Best model status - mIoU: {:.4f}, total RER: {:.4f}, iter {}.'
+                                    .format(best_mean_iou, best_total_rer, best_model_iter))
 
                         if use_ema:
-                            log_writer.add_scalar('Evaluate/Ema_mIoU',
-                                                  ema_mean_iou, iter)
-                            log_writer.add_scalar('Evaluate/Ema_Acc', ema_acc,
-                                                  iter)
+                            ema_states_dict = {
+                                'mIoU': ema_mean_iou,
+                                'Acc': ema_acc,
+                                'iter': iter
+                            }
+                            paddle.save(
+                                ema_states_dict,
+                                os.path.join(current_save_dir,
+                                             'ema_model.pdstates'))
 
-                    if stop_status:
-                        break
+                            if ema_mean_iou > best_ema_mean_iou:
+                                best_ema_mean_iou = ema_mean_iou
+                                best_ema_model_iter = iter
+                                best_ema_model_dir = os.path.join(
+                                    save_dir, "ema_best_model")
+                                os.makedirs(best_ema_model_dir, exist_ok=True)
+                                paddle.save(
+                                    ema_model.state_dict(),
+                                    os.path.join(best_ema_model_dir,
+                                                 'ema_model.pdparams'))
+                                paddle.save(
+                                    ema_states_dict,
+                                    os.path.join(best_ema_model_dir,
+                                                 'ema_model.pdstates'))
+                                if uniform_output_enabled:
+                                    export(cli_args, ema_model,
+                                           best_ema_model_dir, use_ema)
+                                    gc.collect()
+                                    save_model_info(ema_states_dict,
+                                                    best_ema_model_dir)
+                                    update_train_results(cli_args,
+                                                         "ema_best_model",
+                                                         ema_states_dict,
+                                                         done_flag=iter == iters,
+                                                         ema=use_ema)
+                            logger.info(
+                                '[EVAL] The EMA model with the best validation mIoU ({:.4f}) was saved at iter {}.'
+                                .format(best_ema_mean_iou, best_ema_model_iter))
+
+                        if use_vdl:
+                            log_writer.add_scalar('Evaluate/mIoU', mean_iou, iter)
+                            log_writer.add_scalar('Evaluate/Acc', acc, iter)
+
+                            if use_ema:
+                                log_writer.add_scalar('Evaluate/Ema_mIoU',
+                                                      ema_mean_iou, iter)
+                                log_writer.add_scalar('Evaluate/Ema_Acc', ema_acc,
+                                                      iter)
+
+                        if stop_status:
+                            break
+                # end local_rank == 0
                 model.train()
 
             batch_start = time.time()

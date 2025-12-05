@@ -61,7 +61,7 @@ model:
   num_classes: 3  # fundo + folha + quadrado
   backbone:
     type: MobileSeg_Base
-    #inj_type: AAMSx8 //Desativando VIM
+    #inj_type: AAM
     out_feat_chs: [64, 128, 192] 
     pretrained: https://bj.bcebos.com/paddleseg/dygraph/ade20k/pp_mobileseg/pretrain/model.pdparams
   upsample: intepolate

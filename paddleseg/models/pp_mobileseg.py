@@ -117,11 +117,6 @@ class PPMobileSeg(nn.Layer):
         else:
             # Caso seja passado um modo de upsample não implementado
             raise NotImplementedError(self.upsample, " is not implemented")
-        
-        #pred = seg_logits.argmax(axis=1, keepdim=True)  # (B, 1, H, W)
-        #mask = ((pred == 1) | (pred == 2)).astype('float32')  # Máscara binária para classes de interesse
-        #area_logits = area_logits * mask  # Aplica a máscara ao mapa de área, produto de Hadamard.
-        #Acima não está correto, o correto é fazer isso apenas na loss_computation
 
         # Retorno como lista, seguindo a convenção do PaddleSeg (permite múltiplas saídas)
         return [seg_logits, area_logits]
@@ -242,13 +237,15 @@ class AreaSegHead(nn.Layer): #decoder aqui
         # Projeção final para o espaço de classes (logits por classe)
         self.conv_seg = nn.Conv2D(
             self.last_channels, num_classes, kernel_size=1)
+        
+        self.conv_seg_mid = ConvBNAct(
+            self.last_channels, self.last_channels, kernel_size=3, padding=1, groups=self.last_channels if use_dw else 1, act=nn.ReLU)
 
     def forward(self, x):
         # x aqui é o mapa de features do backbone (espera-se tensor 4D)
         x = self.linear_fuse(x)  # Ajuste/normalização das features com activação ReLU
+        x = self.conv_seg_mid(x)  # Convolução intermediária 3x3
         x = self.dropout(x)  # Dropout espacial
-        # conv2D
-        # dropout
         x = self.conv_seg(x)  # Logits por classe (B, num_classes, h, w)
         return x
     
