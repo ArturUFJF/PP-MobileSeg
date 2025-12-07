@@ -441,9 +441,6 @@ def train(model,
                                                  "leaf_model",
                                                  states_dict,
                                                  done_flag=iter == iters)
-                        logger.info(
-                            '[EVAL] The model with the best validation leaf RER ({:.4f}%%) was saved at iter {}.'
-                            .format(best_leaf_rer, best_leaf_model_iter))
 
                     if total_rer < best_total_rer:
                         stop_count = 0
@@ -474,10 +471,16 @@ def train(model,
                         logger.info(
                             'Early stopping at iter {}. The best total RER (leaf+marker) is {:.4f}%.'
                             .format(iter, best_total_rer))
+                        logger.info(
+                            'The best leaf RER is {:.4f}%.'
+                            .format(best_leaf_rer))
                     else:
                         logger.info(
                             '[EVAL] The model with the best validation total RER ({:.4f}%%) was saved at iter {}.'
                             .format(best_total_rer, best_model_iter))
+                        logger.info(
+                            '[EVAL] The model with the best validation leaf RER ({:.4f}%%) was saved at iter {}.'
+                            .format(best_leaf_rer, best_leaf_model_iter))
 
                     if use_ema:
                         ema_states_dict = {
