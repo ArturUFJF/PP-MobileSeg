@@ -74,5 +74,5 @@ log_config:
 val_dataset_config:
   val_interval: 200
   early_stop:
-    patience: 1500
+    patience: 18
     min_improvement: 0.001
