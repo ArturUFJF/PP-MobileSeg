@@ -126,8 +126,12 @@ def train(model,
     
     if paddle.distributed.ParallelEnv().local_rank == 0:
         try:
+            # Usa o nome da pasta de output como nome da run no WandB
+            run_name = os.path.basename(os.path.normpath(save_dir))
+            
             wandb.init(
                 project="PaddleSeg-Leaf-Area",
+                name=run_name,
                 config={
                     "iters": iters,
                     "batch_size": batch_size,
@@ -343,8 +347,7 @@ def train(model,
                             "train/loss": avg_loss,
                             "train/lr": lr,
                             "train/batch_cost": avg_train_batch_cost,
-                            "iter": iter
-                        })
+                        }, step=iter)
                     except Exception:
                         pass
                 # ------------------------
@@ -410,8 +413,8 @@ def train(model,
                             "eval/avg_RER_leaf": avg_RER_leaf,
                             "eval/std_RER_leaf": std_RER_leaf,
                             "eval/avg_RER_marker": avg_RER_marker,
-                            "iter": iter
-                        })
+                            "eval/std_RER_marker": std_RER_marker,
+                        }, step=iter)
                     except Exception:
                         pass
                 # -----------------------
