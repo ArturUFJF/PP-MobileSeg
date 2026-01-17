@@ -127,3 +127,6 @@ dimensionamento_foliar
 
 # Outputs novos
 output/
+
+# WandB
+wandb/

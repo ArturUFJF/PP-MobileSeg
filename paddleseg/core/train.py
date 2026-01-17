@@ -22,6 +22,7 @@ import numpy as np
 import shutil
 from copy import deepcopy
 
+import wandb
 import paddle
 import paddle.nn.functional as F
 
@@ -118,6 +119,26 @@ def train(model,
         logger (Logger, optional): Logger for logging. Default: setup_logger(__file__).
         print_mem_info (bool, optional): Whether to print memory info. Default: False.  
     """
+
+    # --- WANDB SETUP ---
+    # Se nao rodou 'wandb login' no terminal, descomente a linha abaixo e coloque sua chave:
+    # wandb.login(key="SUA_CHAVE_AQUI")
+    
+    if paddle.distributed.ParallelEnv().local_rank == 0:
+        try:
+            wandb.init(
+                project="PaddleSeg-Leaf-Area",
+                config={
+                    "iters": iters,
+                    "batch_size": batch_size,
+                    "model": model.__class__.__name__,
+                    "save_dir": save_dir,
+                    "optimizer": optimizer.__class__.__name__ if optimizer else "Unknown"
+                }
+            )
+        except Exception as e:
+            logger.warning(f"WandB init failed: {e}")
+    # -------------------
 
     if use_ema:
         ema_model = deepcopy(model)
@@ -314,6 +335,20 @@ def train(model,
                             avg_train_reader_cost,
                             batch_cost_averager.get_ips_average(),
                             max_mem_reserved_str, max_mem_allocated_str, eta))
+
+                # --- WANDB LOG: TRAIN ---
+                if paddle.distributed.ParallelEnv().local_rank == 0:
+                    try:
+                        wandb.log({
+                            "train/loss": avg_loss,
+                            "train/lr": lr,
+                            "train/batch_cost": avg_train_batch_cost,
+                            "iter": iter
+                        })
+                    except Exception:
+                        pass
+                # ------------------------
+
                 if use_vdl:
                     log_writer.add_scalar('Train/loss', avg_loss, iter)
                     # Record all losses if there are more than 2 losses.
@@ -365,6 +400,21 @@ def train(model,
                         precision=precision,
                         amp_level=amp_level,
                         **test_config)
+
+                # --- WANDB LOG: EVAL ---
+                if paddle.distributed.ParallelEnv().local_rank == 0:
+                    try:
+                        wandb.log({
+                            "eval/mIoU": mean_iou,
+                            "eval/Acc": acc,
+                            "eval/avg_RER_leaf": avg_RER_leaf,
+                            "eval/std_RER_leaf": std_RER_leaf,
+                            "eval/avg_RER_marker": avg_RER_marker,
+                            "iter": iter
+                        })
+                    except Exception:
+                        pass
+                # -----------------------
 
                 model.train()
 

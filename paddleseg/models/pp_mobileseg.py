@@ -61,6 +61,8 @@ class PPMobileSeg(nn.Layer):
         pretrained (str, opcional): Caminho/URL de pesos pré-treinados para carregar no modelo.
         upsample (str, opcional): Tipo de upsample. 'intepolate' (padrão) ou 'vim' para otimização.
                                  Obs.: 'intepolate' aqui é uma grafia mantida pelo código de origem.
+        freeze_backbone (bool ou int, opcional): Se True, congela todo o backbone. 
+                                                 Se int, congela os primeiros N blocos (children) do backbone.
     """
 
     def __init__(self,
@@ -69,10 +71,24 @@ class PPMobileSeg(nn.Layer):
                  head_use_dw=True,
                  align_corners=False,
                  pretrained=None,
-                 upsample='intepolate'):
+                 upsample='intepolate',
+                 freeze_backbone=False):
         super().__init__()
         # Guarda referências e hiperparâmetros
         self.backbone = backbone  # Backbone deve retornar um mapa de features compatível com a cabeça
+        
+        if freeze_backbone:
+            if isinstance(freeze_backbone, bool) and freeze_backbone:
+                for param in self.backbone.parameters():
+                    param.stop_gradient = True
+            elif isinstance(freeze_backbone, int):
+                # Congela os primeiros N blocos do backbone (útil para fine-tuning)
+                # Assume que o backbone define seus blocos como filhos diretos em ordem
+                for idx, sublayer in enumerate(self.backbone.children()):
+                    if idx < freeze_backbone:
+                        for param in sublayer.parameters():
+                            param.stop_gradient = True
+
         self.upsample = upsample  # Modo de upsample ('intepolate' padrão ou 'vim' otimizado)
         self.num_classes = num_classes
 

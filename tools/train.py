@@ -219,6 +219,7 @@ def main(args):
     optimizer = builder.optimizer
     loss = builder.loss
     logger = setup_logger(log_ranks=log_ranks)
+
     train(model,
           train_dataset,
           val_dataset=val_dataset,
