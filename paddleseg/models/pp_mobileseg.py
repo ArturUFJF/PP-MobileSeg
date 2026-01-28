@@ -137,6 +137,50 @@ class PPMobileSeg(nn.Layer):
         # Retorno como lista, seguindo a convenção do PaddleSeg (permite múltiplas saídas)
         return [seg_logits, area_logits]
 
+    # def loss_computation(self, logits_list, losses, data):
+    #     #Perda da segmentação
+    #     seg_logits, area_logits = logits_list
+    #     seg_labels = data['label'].astype('int64')
+    #     crossEntropy = losses['types'][0]
+    #     coef_ce = losses['coef'][0]
+    #     seg_loss = crossEntropy(seg_logits, seg_labels)
+
+    #     #Perda da área (MSE com máscara)
+    #     # 1. MÁSCARAS BINÁRIAS DAS PREVISÕES
+    #     leaf_mask = (seg_logits.argmax(axis=1, keepdim=True) == 1).astype('float32')
+    #     square_mask = (seg_logits.argmax(axis=1, keepdim=True) == 2).astype('float32')
+
+    #     # 2. GABARITO (Ground Truth)
+    #     area_gt = data['areaLabel'].astype('float32')
+    #     if area_gt.ndim == 3:
+    #         area_gt = area_gt.unsqueeze(1)
+    
+    #     coef_mse = losses['coef'][1]
+    
+    #     # 3. ZERAR ERRO ONDE NÃO HÁ INTERESSE, USANDO AS MÁSCARAS DA PREVISÃO
+    #     # Produto de Hadamard para manter erros apenas nas regiões de interesse
+    #     leaf_error = (area_logits - area_gt) * leaf_mask
+    #     square_error = (area_logits - area_gt) * square_mask
+    
+    #     leaf_error_sq = paddle.square(leaf_error)
+    #     square_error_sq = paddle.square(square_error)
+
+    #     # 4. CALCULAR A MÉDIA CORRETAMENTE (Soma / Contagem)
+    #     epsilon = 1e-6 # Evitar divisão por zero
+    
+    #     # Contar quantos pixels foram previstos como folha/quadrado
+    #     leaf_pixel_count = paddle.sum(leaf_mask) + epsilon
+    #     square_pixel_count = paddle.sum(square_mask) + epsilon
+
+    #     # Calcular a média apenas nesses pixels
+    #     leaf_mse = paddle.sum(leaf_error_sq) / leaf_pixel_count
+    #     square_mse = paddle.sum(square_error_sq) / square_pixel_count
+
+    #     area_loss = leaf_mse + square_mse
+    
+    #     return [coef_ce * seg_loss, coef_mse * area_loss]
+    
+    #MODELO COM LOSS L1
     def loss_computation(self, logits_list, losses, data):
         #Perda da segmentação
         seg_logits, area_logits = logits_list
@@ -155,30 +199,33 @@ class PPMobileSeg(nn.Layer):
         if area_gt.ndim == 3:
             area_gt = area_gt.unsqueeze(1)
     
-        coef_mse = losses['coef'][1]
+        #loss e coeficiente
+        loss_area = losses['types'][1]
+        coef_L1 = losses['coef'][1]
     
         # 3. ZERAR ERRO ONDE NÃO HÁ INTERESSE, USANDO AS MÁSCARAS DA PREVISÃO
         # Produto de Hadamard para manter erros apenas nas regiões de interesse
-        leaf_error = (area_logits - area_gt) * leaf_mask
-        square_error = (area_logits - area_gt) * square_mask
-    
-        leaf_error_sq = paddle.square(leaf_error)
-        square_error_sq = paddle.square(square_error)
+        leaf_masked = area_logits * leaf_mask
+        square_masked = area_logits * square_mask
+        gt_leaf_masked = area_gt * leaf_mask
+        gt_square_masked = area_gt * square_mask
 
-        # 4. CALCULAR A MÉDIA CORRETAMENTE (Soma / Contagem)
-        epsilon = 1e-6 # Evitar divisão por zero
-    
-        # Contar quantos pixels foram previstos como folha/quadrado
-        leaf_pixel_count = paddle.sum(leaf_mask) + epsilon
-        square_pixel_count = paddle.sum(square_mask) + epsilon
+        # Calcular a L1 apenas nesses pixels
+        # OBS: Não converta para float/numpy! Deve continuar sendo Tensor para o treino funcionar.
+        
+        # loss_area retorna o mapa de erros absolutos (|pred - gt|)
+        # Como reduction='none', precisamos somar e dividir manualmente pela área da máscara
+        loss_leaf_map = loss_area(leaf_masked, gt_leaf_masked)
+        loss_square_map = loss_area(square_masked, gt_square_masked)
 
-        # Calcular a média apenas nesses pixels
-        leaf_mse = paddle.sum(leaf_error_sq) / leaf_pixel_count
-        square_mse = paddle.sum(square_error_sq) / square_pixel_count
-
-        area_loss = leaf_mse + square_mse
+        epsilon = 1e-6
+        # Soma todos os erros e divide pelo número de pixels da folha (evita divisão por zero)
+        leaf_L1 = paddle.sum(loss_leaf_map) / (paddle.sum(leaf_mask) + epsilon)
+        square_L1 = paddle.sum(loss_square_map) / (paddle.sum(square_mask) + epsilon)
+        
+        area_loss = leaf_L1 + square_L1
     
-        return [coef_ce * seg_loss, coef_mse * area_loss]
+        return [coef_ce * seg_loss, coef_L1 * area_loss]
     
 class PPMobileSegHead(nn.Layer): #decoder aqui
     # Cabeça simples de segmentação:
