@@ -76,7 +76,7 @@ class PPMobileSeg(nn.Layer):
         super().__init__()
         # Guarda referências e hiperparâmetros
         self.backbone = backbone  # Backbone deve retornar um mapa de features compatível com a cabeça
-        
+        #4 blocos CNN, 2 blocos transformer, 1 bloco de fusão
         if freeze_backbone:
             if isinstance(freeze_backbone, bool) and freeze_backbone:
                 for param in self.backbone.parameters():

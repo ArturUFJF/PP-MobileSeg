@@ -475,65 +475,100 @@ def train(model,
                     if 'best_leaf_rer' not in locals():
                         best_leaf_rer = float('inf')
 
-                    if leaf_rer < best_leaf_rer:
-                        best_leaf_rer = leaf_rer
-                        best_leaf_model_iter = iter
-                        leaf_model_dir = os.path.join(save_dir, "leaf_model")
-                        os.makedirs(leaf_model_dir, exist_ok=True)
-                        paddle.save(
-                            model.state_dict(),
-                            os.path.join(leaf_model_dir, 'model.pdparams'))
-                        paddle.save(
-                            states_dict,
-                            os.path.join(leaf_model_dir, 'model.pdstates'))
-                        if uniform_output_enabled:
-                            export(cli_args, model, leaf_model_dir)
-                            gc.collect()
-                            save_model_info(states_dict, leaf_model_dir)
-                            update_train_results(cli_args,
-                                                 "leaf_model",
-                                                 states_dict,
-                                                 done_flag=iter == iters)
+                    # Modification: For PPMobileSegOnly, save best model based on mIoU
+                    if model.__class__.__name__ == 'PPMobileSegOnly':
+                        if mean_iou > best_mean_iou:
+                            best_mean_iou = mean_iou
+                            best_model_iter = iter
+                            stop_count = 0
+                            best_model_dir = os.path.join(save_dir, "best_model")
+                            os.makedirs(best_model_dir, exist_ok=True)
+                            paddle.save(
+                                model.state_dict(),
+                                os.path.join(best_model_dir, 'model.pdparams'))
+                            paddle.save(
+                                states_dict,
+                                os.path.join(best_model_dir, 'model.pdstates'))
+                            if uniform_output_enabled:
+                                export(cli_args, model, best_model_dir)
+                                gc.collect()
+                                save_model_info(states_dict, best_model_dir)
+                                update_train_results(cli_args,
+                                                     "best_model",
+                                                     states_dict,
+                                                     done_flag=iter == iters)
+                        else:
+                            stop_count += 1
 
-                    if total_rer < best_total_rer:
-                        stop_count = 0
-                        best_total_rer = total_rer
-                        best_model_iter = iter
-                        best_model_dir = os.path.join(save_dir, "best_model")
-                        os.makedirs(best_model_dir, exist_ok=True)
-                        paddle.save(
-                            model.state_dict(),
-                            os.path.join(best_model_dir, 'model.pdparams'))
-                        paddle.save(
-                            states_dict,
-                            os.path.join(best_model_dir, 'model.pdstates'))
-                        if uniform_output_enabled:
-                            export(cli_args, model, best_model_dir)
-                            gc.collect()
-                            save_model_info(states_dict, best_model_dir)
-                            update_train_results(cli_args,
-                                                 "best_model",
-                                                 states_dict,
-                                                 done_flag=iter == iters)
+                        if early_stop_intervals is not None and stop_count >= early_stop_intervals:
+                            stop_status = True
+                            logger.info(
+                                'Early stopping at iter {}. The best mIoU is {:.4f}.'
+                                .format(iter, best_mean_iou))
+                        else:
+                            logger.info(
+                                '[EVAL] The model with the best validation mIoU ({:.4f}) was saved at iter {}.'
+                                .format(best_mean_iou, best_model_iter))
                     else:
-                        # If not improved by total RER, increase stop count
-                        stop_count += 1
+                        if leaf_rer < best_leaf_rer:
+                            best_leaf_rer = leaf_rer
+                            best_leaf_model_iter = iter
+                            leaf_model_dir = os.path.join(save_dir, "leaf_model")
+                            os.makedirs(leaf_model_dir, exist_ok=True)
+                            paddle.save(
+                                model.state_dict(),
+                                os.path.join(leaf_model_dir, 'model.pdparams'))
+                            paddle.save(
+                                states_dict,
+                                os.path.join(leaf_model_dir, 'model.pdstates'))
+                            if uniform_output_enabled:
+                                export(cli_args, model, leaf_model_dir)
+                                gc.collect()
+                                save_model_info(states_dict, leaf_model_dir)
+                                update_train_results(cli_args,
+                                                     "leaf_model",
+                                                     states_dict,
+                                                     done_flag=iter == iters)
 
-                    if early_stop_intervals is not None and stop_count >= early_stop_intervals:
-                        stop_status = True
-                        logger.info(
-                            'Early stopping at iter {}. The best total RER (leaf+marker) is {:.4f}%.'
-                            .format(iter, best_total_rer))
-                        logger.info(
-                            'The best leaf RER is {:.4f}%.'
-                            .format(best_leaf_rer))
-                    else:
-                        logger.info(
-                            '[EVAL] The model with the best validation total RER ({:.4f}%%) was saved at iter {}.'
-                            .format(best_total_rer, best_model_iter))
-                        logger.info(
-                            '[EVAL] The model with the best validation leaf RER ({:.4f}%%) was saved at iter {}.'
-                            .format(best_leaf_rer, best_leaf_model_iter))
+                        if total_rer < best_total_rer:
+                            stop_count = 0
+                            best_total_rer = total_rer
+                            best_model_iter = iter
+                            best_model_dir = os.path.join(save_dir, "best_model")
+                            os.makedirs(best_model_dir, exist_ok=True)
+                            paddle.save(
+                                model.state_dict(),
+                                os.path.join(best_model_dir, 'model.pdparams'))
+                            paddle.save(
+                                states_dict,
+                                os.path.join(best_model_dir, 'model.pdstates'))
+                            if uniform_output_enabled:
+                                export(cli_args, model, best_model_dir)
+                                gc.collect()
+                                save_model_info(states_dict, best_model_dir)
+                                update_train_results(cli_args,
+                                                     "best_model",
+                                                     states_dict,
+                                                     done_flag=iter == iters)
+                        else:
+                            # If not improved by total RER, increase stop count
+                            stop_count += 1
+
+                        if early_stop_intervals is not None and stop_count >= early_stop_intervals:
+                            stop_status = True
+                            logger.info(
+                                'Early stopping at iter {}. The best total RER (leaf+marker) is {:.4f}%.'
+                                .format(iter, best_total_rer))
+                            logger.info(
+                                'The best leaf RER is {:.4f}%.'
+                                .format(best_leaf_rer))
+                        else:
+                            logger.info(
+                                '[EVAL] The model with the best validation total RER ({:.4f}%%) was saved at iter {}.'
+                                .format(best_total_rer, best_model_iter))
+                            logger.info(
+                                '[EVAL] The model with the best validation leaf RER ({:.4f}%%) was saved at iter {}.'
+                                .format(best_leaf_rer, best_leaf_model_iter))
 
                     if use_ema:
                         ema_states_dict = {

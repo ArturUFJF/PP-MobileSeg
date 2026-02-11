@@ -42,15 +42,16 @@ import paddle.nn.functional as F  # Funções funcionais (ex.: interpolate)
 
 from paddleseg.core.train import check_logits_losses
 from paddleseg.cvlibs import manager  # Registro/gerenciamento de componentes (MODELS)
-from paddleseg.models import layers, losses  # Camadas utilitárias (não usadas diretamente neste arquivo)
+from paddleseg.models import losses  # Camadas utilitárias (não usadas diretamente neste arquivo)
+import paddleseg.models.layers as layers
 from paddleseg.utils import utils  # Utilidades (ex.: carregamento de pesos)
 from paddleseg.models.backbones.strideformer import ConvBNAct  # Bloco conv->BN->Ativação pront
 
 # O decorador abaixo registra a classe no registry de modelos do PaddleSeg sob o nome da classe.
 @manager.MODELS.add_component
-class PPMobileSeg(nn.Layer):
+class PPMobileSegOnly(nn.Layer):
     """
-    Implementação do PP_MobileSeg baseada em PaddlePaddle.
+    Implementação do PP_MobileSeg baseada em PaddlePaddle APENAS PARA SEGMENTAÇÃO.
     Referência: https://arxiv.org/abs/2304.05152
 
     Args:
@@ -61,6 +62,8 @@ class PPMobileSeg(nn.Layer):
         pretrained (str, opcional): Caminho/URL de pesos pré-treinados para carregar no modelo.
         upsample (str, opcional): Tipo de upsample. 'intepolate' (padrão) ou 'vim' para otimização.
                                  Obs.: 'intepolate' aqui é uma grafia mantida pelo código de origem.
+        freeze_backbone (bool ou int, opcional): Se True, congela todo o backbone. 
+                                                 Se int, congela os primeiros N blocos (children) do backbone.
     """
 
     def __init__(self,
@@ -69,10 +72,24 @@ class PPMobileSeg(nn.Layer):
                  head_use_dw=True,
                  align_corners=False,
                  pretrained=None,
-                 upsample='intepolate'):
+                 upsample='intepolate',
+                 freeze_backbone=False):
         super().__init__()
         # Guarda referências e hiperparâmetros
         self.backbone = backbone  # Backbone deve retornar um mapa de features compatível com a cabeça
+        #4 blocos CNN, 2 blocos transformer, 1 bloco de fusão
+        if freeze_backbone:
+            if isinstance(freeze_backbone, bool) and freeze_backbone:
+                for param in self.backbone.parameters():
+                    param.stop_gradient = True
+            elif isinstance(freeze_backbone, int):
+                # Congela os primeiros N blocos do backbone (útil para fine-tuning)
+                # Assume que o backbone define seus blocos como filhos diretos em ordem
+                for idx, sublayer in enumerate(self.backbone.children()):
+                    if idx < freeze_backbone:
+                        for param in sublayer.parameters():
+                            param.stop_gradient = True
+
         self.upsample = upsample  # Modo de upsample ('intepolate' padrão ou 'vim' otimizado)
         self.num_classes = num_classes
 
@@ -84,11 +101,7 @@ class PPMobileSeg(nn.Layer):
             use_dw=head_use_dw,
             align_corners=align_corners)
         
-        self.area_head = AreaSegHead(
-            num_classes=1,  
-            in_channels=backbone.feat_channels[0],
-            use_dw=head_use_dw,
-            align_corners=align_corners)
+        # Area head removed for segmentation-only version
 
         self.align_corners = align_corners  # Propagado para F.interpolate
         self.pretrained = pretrained  # Caminho/URL de pesos pré-treinados
@@ -104,7 +117,6 @@ class PPMobileSeg(nn.Layer):
         x_hw = x.shape[2:]  # Guarda a resolução original para upsample posterior
         x = self.backbone(x)  # Extrai features com o backbone
         seg_logits = self.decode_head(x)  # Converte features em logits por classe (B, num_classes, h, w)
-        area_logits = self.area_head(x)  # Converte features em logits por classe (B, num_classes, h, w)
 
         # Estratégia de upsample:
         # - Durante treino (self.training == True), sempre usa interpolate bilinear.
@@ -112,64 +124,22 @@ class PPMobileSeg(nn.Layer):
         if self.upsample == 'intepolate' or self.training or self.num_classes < 30:
             seg_logits = F.interpolate(
                 seg_logits, x_hw, mode='bilinear', align_corners=self.align_corners)
-            area_logits = F.interpolate(
-                area_logits, x_hw, mode='bilinear', align_corners=self.align_corners)
         else:
             # Caso seja passado um modo de upsample não implementado
             raise NotImplementedError(self.upsample, " is not implemented")
-        
-        #pred = seg_logits.argmax(axis=1, keepdim=True)  # (B, 1, H, W)
-        #mask = ((pred == 1) | (pred == 2)).astype('float32')  # Máscara binária para classes de interesse
-        #area_logits = area_logits * mask  # Aplica a máscara ao mapa de área, produto de Hadamard.
-        #Acima não está correto, o correto é fazer isso apenas na loss_computation
 
         # Retorno como lista, seguindo a convenção do PaddleSeg (permite múltiplas saídas)
-        return [seg_logits, area_logits]
-
+        return [seg_logits]
+    
     def loss_computation(self, logits_list, losses, data):
-        """
-        Usa CE para segmentação e MSE mascarada para área.
-        losses['types'][0] deve ser CrossEntropyLoss (labels int64 em (N,1,H,W)).
-        """
-        check_logits_losses(logits_list, losses)
-        assert len(logits_list) == 2, "Esperado [seg_logits, area_logits]"
-
-        seg_logits, area_logits = logits_list
-
-        # 1) Cross-entropy de segmentação
-        seg_labels = data['label'].astype('int64')              # (N,1,H,W)
+        #Perda da segmentação simples
+        seg_logits = logits_list[0]
+        seg_labels = data['label'].astype('int64')
         crossEntropy = losses['types'][0]
         coef_ce = losses['coef'][0]
-        seg_loss = crossEntropy(seg_logits, seg_labels)                   # CE(logits (N,C,H,W), label (N,1,H,W))
+        seg_loss = crossEntropy(seg_logits, seg_labels)
 
-        # 2) MSE de área (canal único), mascarada por pixels de classe > 0
-        leaf_mask = (seg_logits.argmax(axis=1, keepdim=True) == 1).astype('float32')  # Máscara binária para classe da folha
-        square_mask = (seg_logits.argmax(axis=1, keepdim=True) == 2).astype('float32')  # Máscara binária para classe do quadrado
-        area_gt = data['areaLabel'].astype('float32')          # (N,H,W)
-        if area_gt.ndim == 3:
-            area_gt = area_gt.unsqueeze(1)
-
-        leaf_pred = area_logits * leaf_mask  # Aplica máscara binária via produto de Hadamard
-        square_pred = area_logits * square_mask  # Aplica máscara binária via produto de Hadamard
-        area_pred = leaf_pred + square_pred  # Combina previsões mascaradas
-
-        #MSE manual somando apenas pixels de folha e quadrado
-        coef_mse = losses['coef'][1]
-        # Ensure shapes: area_pred (N,1,H,W), area_gt (N,1,H,W), mask (N,1,H,W)
-        mask = (leaf_mask + square_mask).astype('float32')
-        diff = area_pred - area_gt
-        sq = diff * diff * mask
-        sum_sq = paddle.sum(sq)
-        num_pos = paddle.sum(mask)
-        # If there are masked pixels, average over them; otherwise fallback to global mean
-        # Add small eps to avoid division by zero in graph mode.
-        eps = 1e-6
-        area_loss = paddle.where(num_pos > 0,
-                                 sum_sq / (num_pos + eps),
-                                 paddle.mean(sq))
-
-        return [coef_ce * seg_loss, coef_mse * area_loss]
-    
+        return [coef_ce * seg_loss]
     
 class PPMobileSegHead(nn.Layer): #decoder aqui
     # Cabeça simples de segmentação:
@@ -209,44 +179,5 @@ class PPMobileSegHead(nn.Layer): #decoder aqui
         x = self.dropout(x)  # Dropout espacial
         x = self.conv_seg(x)  # Logits por classe (B, num_classes, h, w)
         return x
-    
-    
-class AreaSegHead(nn.Layer): #decoder aqui
-    # Cabeça simples de segmentação:
-    # - Um bloco Conv+BN+ReLU (linear_fuse) com kernel 1x1
-    #   Opcionalmente "depthwise" via groups=in_channels (opera canal a canal)
-    # - Dropout 2D
-    # - Convolução 1x1 final para produzir logits de num_classes
-    def __init__(self,
-                 num_classes,
-                 in_channels,
-                 use_dw=False,
-                 dropout_ratio=0.1,
-                 align_corners=False):
-        super().__init__()
-        self.align_corners = align_corners  # Não é usado diretamente aqui, mas mantido por consistência
-        self.last_channels = in_channels  # Número de canais das features do backbone
 
-        # Bloco de fusão linear:
-        # ConvBNAct com kernel 1x1. Se use_dw=True, usa groups=in_channels (convolução por canal),
-        # que é uma operação leve (sem mistura entre canais). Caso contrário, é conv 1x1 padrão.
-        self.linear_fuse = ConvBNAct(
-            in_channels=self.last_channels,
-            out_channels=self.last_channels,
-            kernel_size=1,
-            stride=1,
-            groups=self.last_channels if use_dw else 1,
-            act=nn.ReLU)
-        # Regularização para reduzir overfitting
-        self.dropout = nn.Dropout2D(dropout_ratio)
-        # Projeção final para o espaço de classes (logits por classe)
-        self.conv_seg = nn.Conv2D(
-            self.last_channels, num_classes, kernel_size=1)
-
-    def forward(self, x):
-        # x aqui é o mapa de features do backbone (espera-se tensor 4D)
-        x = self.linear_fuse(x)  # Ajuste/normalização das features com activação ReLU
-        x = self.dropout(x)  # Dropout espacial
-        x = self.conv_seg(x)  # Logits por classe (B, num_classes, h, w)
-        return x
     

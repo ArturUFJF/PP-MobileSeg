@@ -75,5 +75,6 @@ from .maskformer import MaskFormer
 from .segnext import SegNeXt
 from .knet import KNet
 from .pp_mobileseg import PPMobileSeg
+from .pp_mobileseg_seg import PPMobileSegOnly
 from .pidnet import PIDNet
 from .stfpm import *
