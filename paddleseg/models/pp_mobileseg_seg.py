@@ -1,69 +1,46 @@
-# Comentários em PT-BR adicionados para explicar cada parte do arquivo.
-# Este arquivo define o modelo PPMobileSeg e sua cabeça de decodificação (PPMobileSegHead)
-# para segmentação semântica no PaddlePaddle, seguindo o paper PP-MobileSeg.
-# A arquitetura consiste em:
-# - Um backbone (extração de características)
-# - Uma cabeça de segmentação simples (convolução 1x1 com opção de "depthwise")
-# - Um passo de upsample com dois modos: 'intepolate' (bilinear padrão) e 'vim' (otimização para inferência)
-# O modelo é registrado no gerenciador de modelos do PaddleSeg para ser construído via config.
-
 # Copyright (c) 2023 PaddlePaddle Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
-# Você não pode usar este arquivo exceto em conformidade com a Licença.
-# Você pode obter uma cópia da Licença em http://www.apache.org/licenses/LICENSE-2.0
-# Software fornecido "como está", sem garantias.
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
-"""
-Comentários gerais (PT-BR):
+import warnings
 
-Este módulo implementa o modelo PPMobileSeg adaptado para duas saídas:
-- `seg_logits`: logits de segmentação (num_classes canais) usados para treinar/avaliar a segmentação.
-- `area_logits`: mapa de regressão por-pixel (1 canal) que estima a área associada a cada pixel
-    (por exemplo, área estimada em unidades arbitrárias fornecidas pelos arquivos .raw).
+import paddle
+import paddle.nn as nn
+import paddle.nn.functional as F
 
-Principais decisões implementadas aqui:
-- A cabeça de área (`AreaSegHead`) devolve um mapa de 1 canal com valores contínuos.
-- A função `loss_computation` calcula duas perdas:
-    1) perda de segmentação (CrossEntropy) usando `data['label']`;
-    2) perda de área (MSE) calculada apenas dentro das máscaras dos objetos (folha e quadrado)
-         usando o produto de Hadamard entre a máscara binária (GT) e os valores de `areaLabel` (.raw).
+from paddleseg.cvlibs import manager
+from paddleseg.models import layers
+from paddleseg.utils import utils
+from paddleseg.models.backbones.strideformer import ConvBNAct
 
-Isso faz com que a rede aprenda os valores por-pixel da mapagem de área diretamente dos .raw,
-sem forçar uma área fixa para o marcador (quadrado). A calibração absoluta (cm^2) pode ser
-tratada separadamente no passo de inferência/visualização se necessário.
-"""
 
-import warnings  # Import para avisos; não é utilizado explicitamente abaixo, mas pode ser mantido para extensões
-
-import paddle  # Framework principal (tensores, autograd, etc.)
-import paddle.nn as nn  # Módulos de rede neural
-import paddle.nn.functional as F  # Funções funcionais (ex.: interpolate)
-
-from paddleseg.core.train import check_logits_losses
-from paddleseg.cvlibs import manager  # Registro/gerenciamento de componentes (MODELS)
-from paddleseg.models import losses  # Camadas utilitárias (não usadas diretamente neste arquivo)
-import paddleseg.models.layers as layers
-from paddleseg.utils import utils  # Utilidades (ex.: carregamento de pesos)
-from paddleseg.models.backbones.strideformer import ConvBNAct  # Bloco conv->BN->Ativação pront
-
-# O decorador abaixo registra a classe no registry de modelos do PaddleSeg sob o nome da classe.
 @manager.MODELS.add_component
 class PPMobileSegOnly(nn.Layer):
     """
-    Implementação do PP_MobileSeg baseada em PaddlePaddle APENAS PARA SEGMENTAÇÃO.
-    Referência: https://arxiv.org/abs/2304.05152
+    The PP_MobileSeg implementation based on PaddlePaddle.
+
+    The original article refers to "Shiyu Tang, Ting Sun, Juncai Peng, Guowei Chen, Yuying Hao, 
+    Manhui Lin, Zhihong Xiao, Jiangbin You, Yi Liu. PP-MobileSeg: Explore the Fast and Accurate 
+    Semantic Segmentation Model on Mobile Devices. https://arxiv.org/abs/2304.05152"
+
 
     Args:
-        num_classes (int): Número de classes alvo.
-        backbone (nn.Layer): Backbone de extração de features (deve definir feat_channels).
-        head_use_dw (bool, opcional): Se a cabeça usa convoluções "depthwise" (via groups).
-        align_corners (bool, opcional): Parâmetro do resize bilinear para alinhamento de cantos.
-        pretrained (str, opcional): Caminho/URL de pesos pré-treinados para carregar no modelo.
-        upsample (str, opcional): Tipo de upsample. 'intepolate' (padrão) ou 'vim' para otimização.
-                                 Obs.: 'intepolate' aqui é uma grafia mantida pelo código de origem.
-        freeze_backbone (bool ou int, opcional): Se True, congela todo o backbone. 
-                                                 Se int, congela os primeiros N blocos (children) do backbone.
+        num_classes(int): The unique number of target classes.
+        backbone(nn.Layer): Backbone network.
+        head_use_dw (bool, optional): Whether the head use depthwise convolutions. Default: True.
+        align_corners (bool, optional): Set the align_corners in resizing. Default: False.
+        pretrained (str, optional): The path or url of pretrained model. Default: None.
+        upsample (str, optional): The type of upsample module, valid for VIM is recommend to be used during inference. Default: intepolate.
     """
 
     def __init__(self,
@@ -75,78 +52,61 @@ class PPMobileSegOnly(nn.Layer):
                  upsample='intepolate',
                  freeze_backbone=False):
         super().__init__()
-        # Guarda referências e hiperparâmetros
-        self.backbone = backbone  # Backbone deve retornar um mapa de features compatível com a cabeça
-        #4 blocos CNN, 2 blocos transformer, 1 bloco de fusão
+        self.backbone = backbone
+        # Optionally freeze backbone parameters or first N submodules
         if freeze_backbone:
             if isinstance(freeze_backbone, bool) and freeze_backbone:
                 for param in self.backbone.parameters():
                     param.stop_gradient = True
             elif isinstance(freeze_backbone, int):
-                # Congela os primeiros N blocos do backbone (útil para fine-tuning)
-                # Assume que o backbone define seus blocos como filhos diretos em ordem
                 for idx, sublayer in enumerate(self.backbone.children()):
                     if idx < freeze_backbone:
                         for param in sublayer.parameters():
                             param.stop_gradient = True
 
-        self.upsample = upsample  # Modo de upsample ('intepolate' padrão ou 'vim' otimizado)
+        self.upsample = upsample
         self.num_classes = num_classes
 
-        # Cria a cabeça de decodificação (converte features do backbone em logits por classe)
-        # in_channels vem do backbone.feat_channels[0] (convenciona-se que seja o mapa principal)
         self.decode_head = PPMobileSegHead(
             num_classes=num_classes,
             in_channels=backbone.feat_channels[0],
             use_dw=head_use_dw,
             align_corners=align_corners)
-        
-        # Area head removed for segmentation-only version
 
-        self.align_corners = align_corners  # Propagado para F.interpolate
-        self.pretrained = pretrained  # Caminho/URL de pesos pré-treinados
-        self.init_weight()  # Carrega pesos, se informados
+        self.align_corners = align_corners
+        self.pretrained = pretrained
+        self.init_weight()
 
     def init_weight(self):
-        # Carrega todo o estado do modelo se self.pretrained for fornecido
         if self.pretrained is not None:
             utils.load_entire_model(self, self.pretrained)
 
     def forward(self, x):
-        # x: tensor de entrada (B, C, H, W)
-        x_hw = x.shape[2:]  # Guarda a resolução original para upsample posterior
-        x = self.backbone(x)  # Extrai features com o backbone
-        seg_logits = self.decode_head(x)  # Converte features em logits por classe (B, num_classes, h, w)
-
-        # Estratégia de upsample:
-        # - Durante treino (self.training == True), sempre usa interpolate bilinear.
-        # - Também usa interpolate se upsample == 'intepolate' (padrão) ou num_classes < 30 (heurística).
+        x_hw = x.shape[2:]
+        x = self.backbone(x)
+        x = self.decode_head(x)
         if self.upsample == 'intepolate' or self.training or self.num_classes < 30:
-            seg_logits = F.interpolate(
-                seg_logits, x_hw, mode='bilinear', align_corners=self.align_corners)
+            x = F.interpolate(
+                x, x_hw, mode='bilinear', align_corners=self.align_corners)
+        elif self.upsample == 'vim':
+            labelset = paddle.unique(paddle.argmax(x, 1))
+            x = paddle.gather(x, labelset, axis=1)
+            x = F.interpolate(
+                x, x_hw, mode='bilinear', align_corners=self.align_corners)
+
+            pred = paddle.argmax(x, 1)
+            pred_retrieve = paddle.zeros(pred.shape, dtype='int32')
+            for i, val in enumerate(labelset):
+                pred_retrieve[pred == i] = labelset[i].cast('int32')
+
+            x = pred_retrieve
         else:
-            # Caso seja passado um modo de upsample não implementado
             raise NotImplementedError(self.upsample, " is not implemented")
 
-        # Retorno como lista, seguindo a convenção do PaddleSeg (permite múltiplas saídas)
-        return [seg_logits]
-    
-    def loss_computation(self, logits_list, losses, data):
-        #Perda da segmentação simples
-        seg_logits = logits_list[0]
-        seg_labels = data['label'].astype('int64')
-        crossEntropy = losses['types'][0]
-        coef_ce = losses['coef'][0]
-        seg_loss = crossEntropy(seg_logits, seg_labels)
+        return [x]
 
-        return [coef_ce * seg_loss]
-    
-class PPMobileSegHead(nn.Layer): #decoder aqui
-    # Cabeça simples de segmentação:
-    # - Um bloco Conv+BN+ReLU (linear_fuse) com kernel 1x1
-    #   Opcionalmente "depthwise" via groups=in_channels (opera canal a canal)
-    # - Dropout 2D
-    # - Convolução 1x1 final para produzir logits de num_classes
+
+class PPMobileSegHead(nn.Layer):
     def __init__(self,
                  num_classes,
                  in_channels,
@@ -154,12 +114,9 @@ class PPMobileSegHead(nn.Layer): #decoder aqui
                  dropout_ratio=0.1,
                  align_corners=False):
         super().__init__()
-        self.align_corners = align_corners  # Não é usado diretamente aqui, mas mantido por consistência
-        self.last_channels = in_channels  # Número de canais das features do backbone
+        self.align_corners = align_corners
+        self.last_channels = in_channels
 
-        # Bloco de fusão linear:
-        # ConvBNAct com kernel 1x1. Se use_dw=True, usa groups=in_channels (convolução por canal),
-        # que é uma operação leve (sem mistura entre canais). Caso contrário, é conv 1x1 padrão.
         self.linear_fuse = ConvBNAct(
             in_channels=self.last_channels,
             out_channels=self.last_channels,
@@ -167,17 +124,12 @@ class PPMobileSegHead(nn.Layer): #decoder aqui
             stride=1,
             groups=self.last_channels if use_dw else 1,
             act=nn.ReLU)
-        # Regularização para reduzir overfitting
         self.dropout = nn.Dropout2D(dropout_ratio)
-        # Projeção final para o espaço de classes (logits por classe)
         self.conv_seg = nn.Conv2D(
             self.last_channels, num_classes, kernel_size=1)
 
     def forward(self, x):
-        # x aqui é o mapa de features do backbone (espera-se tensor 4D)
-        x = self.linear_fuse(x)  # Ajuste/normalização das features com activação ReLU
-        x = self.dropout(x)  # Dropout espacial
-        x = self.conv_seg(x)  # Logits por classe (B, num_classes, h, w)
+        x = self.linear_fuse(x)
+        x = self.dropout(x)
+        x = self.conv_seg(x)
         return x
-
-    

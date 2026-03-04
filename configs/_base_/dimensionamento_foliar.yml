@@ -4,34 +4,28 @@ iters: 8000
 
 train_dataset:
   type: Dataset
-  dataset_root: data/dimensionamento_foliar
-  train_path: data/dimensionamento_foliar/train.txt
+  dataset_root: data/dimensionamento_foliar_640
+  train_path: data/dimensionamento_foliar_640/train.txt
   num_classes: 3
   transforms:
-    - type: Resize
-      target_size: [512, 512]
     - type: Normalize
   mode: train
 
 val_dataset:
   type: Dataset
-  dataset_root: data/dimensionamento_foliar
-  val_path: data/dimensionamento_foliar/val.txt
+  dataset_root: data/dimensionamento_foliar_640
+  val_path: data/dimensionamento_foliar_640/val.txt
   num_classes: 3
   transforms:
-    - type: Resize
-      target_size: [512, 512]
     - type: Normalize
   mode: val
 
 test_dataset:
   type: Dataset
-  dataset_root: data/dimensionamento_foliar
-  test_path: data/dimensionamento_foliar/test.txt
+  dataset_root: data/dimensionamento_foliar_640
+  test_path: data/dimensionamento_foliar_640/test.txt
   num_classes: 3
   transforms:
-    - type: Resize
-      target_size: [512, 512]
     - type: Normalize
   mode: test
 
