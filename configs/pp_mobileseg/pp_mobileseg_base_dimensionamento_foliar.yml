@@ -1,26 +1,30 @@
 _base_: '../_base_/dimensionamento_foliar.yml'
 
-batch_size: 16  # ajuste conforme sua GPU
-num_workers: 6  # ajuste conforme sua GPU
-iters: 10000
+batch_size: 12  # ajuste conforme sua GPU
+num_workers: 6  # ajuste conforme sua CPU
+iters: 12000
+
+early_stop:
+  intervals: 4
+  min_improvement: 0.001
 
 precision: fp16
 amp_level: O1
 
 train_dataset:
   transforms:
-    #- type: ResizeStepScaling
-      #min_scale_factor: 0.5
-      #max_scale_factor: 1.5
-      #scale_step_size: 0.125
-    #- type: RandomPaddingCrop
-    #  crop_size: [512, 512]  # ajustado para imagens menores
+    - type: ResizeStepScaling
+      min_scale_factor: 0.75
+      max_scale_factor: 1.5
+      scale_step_size: 0.125
+    - type: RandomPaddingCrop
+      crop_size: [256, 256]  # ajustado para imagens menores
     - type: RandomHorizontalFlip
     - type: RandomVerticalFlip  # útil para folhas
     - type: RandomDistort
-      brightness_range: 0.25
-      contrast_range: 0.25
-      saturation_range: 0.25
+      brightness_range: 0.12
+      contrast_range: 0.12
+      saturation_range: 0.12
     - type: Normalize
 
 
@@ -34,21 +38,30 @@ optimizer:
   - name: head
     lr_multi: 10.0
   - name: bn
-    weight_decay_mult: 0.0
 
 lr_scheduler:
   type: PolynomialDecay
-  learning_rate: 1.0e-4
-  end_lr: 0
-  power: 1.0
+  #type: CosineAnnealingDecay
+  learning_rate: 4.0e-3
+  #T_max: 10000
+  #eta_min: 1.0e-6
   warmup_iters: 1000
   warmup_start_lr: 1.0e-6
+
+#loss:
+#  types:
+#    - type: LinearRampLoss
+#      start_coefs: [0.8, 0.2]
+#      end_coefs: [0.4, 0.6]
+#      total_iters: 10000 # Ajuste conforme o tamanho do seu dataset/épocas
+#  coef: [1] # O coeficiente aqui vira 1, pois a LinearRampLoss já faz a soma interna
 
 loss:
   types:
     - type: MixedLoss
       losses:
         - type: CrossEntropyLoss
+          weight: [0.4, 1.0, 3.0]  # fundo, folha, marcador
         - type: LovaszSoftmaxLoss
       coef: [0.8, 0.2] # ajustando coeficiente para enfatizar CrossEntropyLoss, já que LovaszSoftmaxLoss pode ser instável no início do treinamento
   coef: [1.0]

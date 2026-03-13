@@ -36,7 +36,7 @@ optimizer:
 
 lr_scheduler:
   type: PolynomialDecay
-  learning_rate: 0.004
+  #learning_rate: 0.004
   end_lr: 0
   power: 0.9
 

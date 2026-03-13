@@ -73,6 +73,7 @@ def train(model,
           iters=10000,
           batch_size=2,
           early_stop_intervals=None,
+          early_stop_min_improvement=0.0,
           resume_model=None,
           save_interval=1000,
           log_iters=10,
@@ -101,6 +102,8 @@ def train(model,
         save_dir (str, optional): The directory for saving the model snapshot. Default: 'output'.
         iters (int, optional): How may iters to train the model. Defualt: 10000.
         batch_size (int, optional): Mini batch size of one gpu or cpu. Default: 2.
+        early_stop_intervals (int, optional): Number of evaluation intervals without improvement before stopping.
+        early_stop_min_improvement (float, optional): Minimum absolute improvement to reset early stop counter. Default: 0.0.
         resume_model (str, optional): The path of resume model.
         save_interval (int, optional): How many iters to save a model snapshot once during training. Default: 1000.
         log_iters (int, optional): Display logging information at every log_iters. Default: 10.
@@ -159,6 +162,11 @@ def train(model,
     start_iter = 0
     stop_count = 0
     stop_status = False
+    try:
+        early_stop_min_improvement = max(
+            0.0, float(early_stop_min_improvement if early_stop_min_improvement is not None else 0.0))
+    except (TypeError, ValueError):
+        early_stop_min_improvement = 0.0
     if resume_model is not None:
         start_iter = resume(model, optimizer, resume_model)
 
@@ -383,7 +391,7 @@ def train(model,
                 if test_config is None:
                     test_config = {}
 
-                (mean_iou, acc, _, _, _, avg_RER_leaf, std_RER_leaf,
+                     (mean_iou, acc, class_iou, _, _, avg_RER_leaf, std_RER_leaf,
                  avg_RER_marker, std_RER_marker) = evaluate(
                     model,
                     val_dataset,
@@ -407,14 +415,21 @@ def train(model,
                 # --- WANDB LOG: EVAL ---
                 if paddle.distributed.ParallelEnv().local_rank == 0:
                     try:
-                        wandb.log({
+                        eval_log = {
                             "eval/mIoU": mean_iou,
                             "eval/Acc": acc,
+                            "eval/best_mIoU": best_mean_iou,
+                            "eval/best_mIoU_iter": best_model_iter,
                             "eval/avg_RER_leaf": avg_RER_leaf,
                             "eval/std_RER_leaf": std_RER_leaf,
                             "eval/avg_RER_marker": avg_RER_marker,
                             "eval/std_RER_marker": std_RER_marker,
-                        }, step=iter)
+                        }
+                        if class_iou is not None:
+                            for class_idx, value in enumerate(np.asarray(class_iou).tolist()):
+                                eval_log[f"eval/class_mIoU_{class_idx}"] = float(value)
+
+                        wandb.log(eval_log, step=iter)
                     except Exception:
                         pass
                 # -----------------------
@@ -477,10 +492,18 @@ def train(model,
 
                     # Modification: For PPMobileSegOnly, save best model based on mIoU
                     if model.__class__.__name__ == 'PPMobileSegOnly':
-                        if mean_iou > best_mean_iou:
+                        if mean_iou > (best_mean_iou + early_stop_min_improvement):
                             best_mean_iou = mean_iou
                             best_model_iter = iter
                             stop_count = 0
+                            if paddle.distributed.ParallelEnv().local_rank == 0:
+                                try:
+                                    wandb.log({
+                                        "eval/best_mIoU": best_mean_iou,
+                                        "eval/best_mIoU_iter": best_model_iter,
+                                    }, step=iter)
+                                except Exception:
+                                    pass
                             best_model_dir = os.path.join(save_dir, "best_model")
                             os.makedirs(best_model_dir, exist_ok=True)
                             paddle.save(
@@ -503,8 +526,10 @@ def train(model,
                         if early_stop_intervals is not None and stop_count >= early_stop_intervals:
                             stop_status = True
                             logger.info(
-                                'Early stopping at iter {}. The best mIoU is {:.4f}.'
-                                .format(iter, best_mean_iou))
+                                'Early stopping at iter {}. The best mIoU is {:.4f}. '
+                                'min_improvement={:.6f}.'
+                                .format(iter, best_mean_iou,
+                                        early_stop_min_improvement))
                         else:
                             logger.info(
                                 '[EVAL] The model with the best validation mIoU ({:.4f}) was saved at iter {}.'
@@ -530,7 +555,7 @@ def train(model,
                                                      states_dict,
                                                      done_flag=iter == iters)
 
-                        if total_rer < best_total_rer:
+                        if total_rer < (best_total_rer - early_stop_min_improvement):
                             stop_count = 0
                             best_total_rer = total_rer
                             best_model_iter = iter
@@ -557,8 +582,10 @@ def train(model,
                         if early_stop_intervals is not None and stop_count >= early_stop_intervals:
                             stop_status = True
                             logger.info(
-                                'Early stopping at iter {}. The best total RER (leaf+marker) is {:.4f}%.'
-                                .format(iter, best_total_rer))
+                                'Early stopping at iter {}. The best total RER (leaf+marker) is {:.4f}%. '
+                                'min_improvement={:.6f}.'
+                                .format(iter, best_total_rer,
+                                        early_stop_min_improvement))
                             logger.info(
                                 'The best leaf RER is {:.4f}%.'
                                 .format(best_leaf_rer))

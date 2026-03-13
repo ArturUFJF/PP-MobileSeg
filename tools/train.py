@@ -85,6 +85,11 @@ def parse_args():
                         help='Early Stop at args number of save intervals.',
                         type=int,
                         default=None)
+    parser.add_argument(
+        '--early_stop_min_improvement',
+        help='Minimum absolute metric improvement required to reset early stop counter.',
+        type=float,
+        default=None)
 
     # Other params
     parser.add_argument('--seed',
@@ -174,6 +179,17 @@ def main(args):
                  opts=args.opts)
     builder = SegBuilder(cfg)
 
+    early_stop_cfg = cfg.dic.get('early_stop', {})
+    early_stop_intervals = args.early_stop_intervals
+    if early_stop_intervals is None:
+        early_stop_intervals = early_stop_cfg.get(
+            'intervals', cfg.dic.get('early_stop_intervals', None))
+
+    early_stop_min_improvement = args.early_stop_min_improvement
+    if early_stop_min_improvement is None:
+        early_stop_min_improvement = early_stop_cfg.get(
+            'min_improvement', cfg.dic.get('early_stop_min_improvement', 0.0))
+
     utils.show_env_info()
     utils.show_cfg_info(cfg)
     utils.set_seed(args.seed)
@@ -227,7 +243,8 @@ def main(args):
           save_dir=args.save_dir,
           iters=cfg.iters,
           batch_size=cfg.batch_size,
-          early_stop_intervals=args.early_stop_intervals,
+            early_stop_intervals=early_stop_intervals,
+            early_stop_min_improvement=early_stop_min_improvement,
           resume_model=args.resume_model,
           save_interval=args.save_interval,
           log_iters=args.log_iters,

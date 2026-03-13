@@ -105,6 +105,13 @@ def parse_args():
         default=False,
         help='Whether to enable multilabel mode. Default: False.')
 
+    # Area map visualization
+    parser.add_argument(
+        '--area_map',
+        action='store_true',
+        default=False,
+        help='Enable area-map heatmap visualization (only for models that output a per-pixel area map). Default: False.')
+
     return parser.parse_args()
 
 
@@ -177,6 +184,7 @@ def main(args):
         image_list=image_list,
         image_dir=image_dir,
         save_dir=args.save_dir,
+        use_area_map=args.area_map,
         **test_config)
 
 

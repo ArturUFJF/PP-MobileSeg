@@ -18,10 +18,6 @@ import math
 import cv2
 import numpy as np
 import paddle
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
-from matplotlib.colors import LinearSegmentedColormap
 
 from paddleseg import utils
 from paddleseg.core import infer
@@ -49,18 +45,19 @@ def preprocess(im_path, transforms):
     return data
 
 
-_base_cmap = plt.cm.jet(np.linspace(0, 1, 256))
-_base_cmap[0] = [0, 0, 0, 1]
-AREA_CMAP = LinearSegmentedColormap.from_list('pp_mobile_seg_area', _base_cmap, 256)
-
-
 def save_area_heatmap(data,
                       out_path,
-                      cmap,
                       vmin,
                       vmax,
                       leaf_area=None,
                       square_area=None):
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    from matplotlib.colors import LinearSegmentedColormap
+    _base_cmap = plt.cm.jet(np.linspace(0, 1, 256))
+    _base_cmap[0] = [0, 0, 0, 1]
+    cmap = LinearSegmentedColormap.from_list('pp_mobile_seg_area', _base_cmap, 256)
     fig, ax = plt.subplots(figsize=(4.5, 4.5))
     im = ax.imshow(data, cmap=cmap, vmin=vmin, vmax=vmax)
     ax.set_axis_off()
@@ -94,7 +91,8 @@ def predict(model,
             stride=None,
             crop_size=None,
             custom_color=None,
-            use_multilabel=False):
+            use_multilabel=False,
+            use_area_map=False):
     """
     predict and visualize the image_list.
 
@@ -116,6 +114,7 @@ def predict(model,
             It should be provided when `is_slide` is True.
         custom_color (list, optional): Save images with a custom color map. Default: None, use paddleseg's default color map.
         use_multilabel (bool, optional): Whether to enable multilabel mode. Default: False.
+        use_area_map (bool, optional): Whether to generate area heatmap visualization. Default: False.
 
     """
     utils.utils.load_entire_model(model, model_path)
@@ -189,7 +188,8 @@ def predict(model,
             # per-pixel area predictions. Map pixel values linearly to [0,255]
             # per-image and apply a perceptual colormap (JET) so tone corresponds
             # to numeric area value.
-            try:
+            if use_area_map:
+              try:
                 if 'area_map' in locals() and area_map is not None:
                     # area_map may be a paddle Tensor or numpy array. Convert to numpy.
                     if isinstance(area_map, paddle.Tensor):
@@ -219,19 +219,29 @@ def predict(model,
                                     im_file, amap.shape, amap.dtype)
 
                     # Compute numeric areas for leaf (class=1) and square (class=2)
+                    amap_proc = None
+                    leaf_area_val = 0.0
+                    square_area_val = 0.0
                     try:
                         # pred is uint8 numpy array with shape (H, W)
                         leaf_mask = (pred == 1)
                         square_mask = (pred == 2)
                         # Ensure amap shape matches pred
                         if amap.shape != pred.shape:
-                            # try transpose or squeeze if necessary
-                            amap_proc = np.squeeze(amap)
+                            _squeezed = np.squeeze(amap)
                         else:
-                            amap_proc = amap
+                            _squeezed = amap
 
-                        leaf_area_val = float(np.sum(amap_proc[leaf_mask])/1000.0) if np.any(leaf_mask) else 0.0
-                        square_area_val = float(np.sum(amap_proc[square_mask])/1000.0) if np.any(square_mask) else 0.0
+                        # Only index if the result is truly 2D and matches pred
+                        if _squeezed.ndim == 2 and _squeezed.shape == pred.shape:
+                            amap_proc = _squeezed
+                            leaf_area_val = float(np.sum(amap_proc[leaf_mask])/1000.0) if np.any(leaf_mask) else 0.0
+                            square_area_val = float(np.sum(amap_proc[square_mask])/1000.0) if np.any(square_mask) else 0.0
+                        else:
+                            logger.warning(
+                                "area_map shape %s cannot be reduced to (H,W) matching pred shape %s "
+                                "for %s — skipping numeric area computation.",
+                                amap.shape, pred.shape, im_file)
 
                         logger.info("Predicted areas for %s: leaf=%.4f  square=%.4f",
                                     im_file, leaf_area_val, square_area_val)
@@ -261,47 +271,47 @@ def predict(model,
                             cv2.putText(added_image, text2, org2, font, scale, (0, 0, 0), thickness + 2, cv2.LINE_AA)
                             cv2.putText(added_image, text2, org2, font, scale, (255, 255, 255), thickness, cv2.LINE_AA)
                         except Exception:
-                            logger.exception("Failed overlaying area text on image %s", im_file)
+                            logger.error("Failed overlaying area text on image %s", im_file)
                     except Exception:
-                        logger.exception("Failed computing numeric areas for %s", im_file)
+                        logger.error("Failed computing numeric areas for %s", im_file)
 
-                    # Save color map as PNG with Matplotlib colorbar
-                    area_out_path = os.path.join(
-                        area_saved_dir, os.path.splitext(im_file)[0] + "_area.png")
-                    mkdir(area_out_path)
+                    # Save color map as PNG with Matplotlib colorbar (only if amap_proc is valid)
+                    if amap_proc is not None:
+                        area_out_path = os.path.join(
+                            area_saved_dir, os.path.splitext(im_file)[0] + "_area.png")
+                        mkdir(area_out_path)
 
-                    display_map = amap_proc / 1000.0
-                    if np.all(np.isnan(display_map)):
-                        display_map = np.zeros_like(display_map)
-                        display_vmin, display_vmax = 0.0, 1.0
-                    else:
-                        display_vmin = float(np.nanmin(display_map))
-                        display_vmax = float(np.nanmax(display_map))
-                        if not np.isfinite(display_vmin):
-                            display_vmin = 0.0
-                        if not np.isfinite(display_vmax):
-                            display_vmax = display_vmin + 1.0
-                    if display_vmax - display_vmin < 1e-6:
-                        display_vmax = display_vmin + 1e-6
+                        display_map = amap_proc / 1000.0
+                        if np.all(np.isnan(display_map)):
+                            display_map = np.zeros_like(display_map)
+                            display_vmin, display_vmax = 0.0, 1.0
+                        else:
+                            display_vmin = float(np.nanmin(display_map))
+                            display_vmax = float(np.nanmax(display_map))
+                            if not np.isfinite(display_vmin):
+                                display_vmin = 0.0
+                            if not np.isfinite(display_vmax):
+                                display_vmax = display_vmin + 1.0
+                        if display_vmax - display_vmin < 1e-6:
+                            display_vmax = display_vmin + 1e-6
 
-                    save_area_heatmap(data=display_map,
-                                      out_path=area_out_path,
-                                      cmap=AREA_CMAP,
-                                      vmin=display_vmin,
-                                      vmax=display_vmax,
-                                      leaf_area=leaf_area_val,
-                                      square_area=square_area_val)
+                        save_area_heatmap(data=display_map,
+                                          out_path=area_out_path,
+                                          vmin=display_vmin,
+                                          vmax=display_vmax,
+                                          leaf_area=leaf_area_val,
+                                          square_area=square_area_val)
                 else:
                     logger.info("No area_map for %s (skipping area visualization)", im_file)
-            except Exception as e:
+              except Exception as e:
                 # Non-fatal: area visualization is optional, but log the exception for debugging
-                logger.exception("Failed to generate/save area color map for %s: %s", im_file, str(e))
+                logger.error("Failed to generate/save area color map for %s: %s", im_file, str(e))
 
             # Save the added_image (with optional overlayed area text)
             try:
                 cv2.imwrite(added_image_path, added_image)
             except Exception:
-                logger.exception("Failed to save added image for %s", im_file)
+                logger.error("Failed to save added image for %s", im_file)
 
             progbar_pred.update(i + 1)
 
