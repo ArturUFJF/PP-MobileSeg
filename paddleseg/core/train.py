@@ -391,7 +391,7 @@ def train(model,
                 if test_config is None:
                     test_config = {}
 
-                     (mean_iou, acc, class_iou, _, _, avg_RER_leaf, std_RER_leaf,
+                (mean_iou, acc, class_iou, _, _, avg_RER_leaf, std_RER_leaf,
                  avg_RER_marker, std_RER_marker) = evaluate(
                     model,
                     val_dataset,
