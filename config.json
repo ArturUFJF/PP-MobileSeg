@@ -1,6 +1,0 @@
-{
-  "image_dir": "D:/UFJF/IC/PaddleSeg/data/dimensionamento_foliar_full/images",
-  "xml_dir": "D:/UFJF/IC/PaddleSeg/data/dimensionamento_foliar_full/xml",
-  "prediction_dir": "D:/UFJF/IC/PaddleSeg/output/pp_mobileseg_dimensionamento/lr_4e-3_640/predict_results/pseudo_color_prediction/images",
-  "results_path": "D:/UFJF/IC/PaddleSeg/output/area_estimation"
-}
