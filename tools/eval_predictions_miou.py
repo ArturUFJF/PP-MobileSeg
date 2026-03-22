@@ -53,7 +53,14 @@ def fast_hist(gt: np.ndarray, pred: np.ndarray, num_classes: int, ignore_index: 
     valid = (gt != ignore_index) & (gt >= 0) & (gt < num_classes)
     gt = gt[valid]
     pred = pred[valid]
-    pred = np.clip(pred, 0, num_classes - 1)
+    if gt.size == 0:
+        return np.zeros((num_classes, num_classes), dtype=np.int64), 0
+    invalid_pred = (pred < 0) | (pred >= num_classes)
+    if np.any(invalid_pred):
+        invalid_values = np.unique(pred[invalid_pred])
+        raise ValueError(
+            f"Pred mask has invalid class ids: {invalid_values.tolist()} (valid range: 0..{num_classes - 1})"
+        )
     hist = np.bincount(num_classes * gt + pred, minlength=num_classes**2)
     return hist.reshape(num_classes, num_classes), valid.sum()
 
@@ -78,6 +85,13 @@ def collect_gt_files(gt_dir: Path, split_file: Path | None):
 def build_pred_index(pred_dir: Path):
     pred_map = {}
     for p in pred_dir.rglob("*.png"):
+        if p.name in pred_map:
+            raise ValueError(
+                f"Duplicate prediction filename found: {p.name}\n"
+                f"  First: {pred_map[p.name]}\n"
+                f"  Second: {p}\n"
+                "Use unique filenames or evaluate one folder at a time."
+            )
         pred_map[p.name] = p
     return pred_map
 
