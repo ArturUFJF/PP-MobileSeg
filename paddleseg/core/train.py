@@ -386,7 +386,7 @@ def train(model,
 
             if (iter % save_interval == 0 or iter == iters) and (val_dataset
                                                                  is not None):
-                num_workers = 1 if num_workers > 0 else 0
+                num_workers = 6 if num_workers > 0 else 0
 
                 if test_config is None:
                     test_config = {}
