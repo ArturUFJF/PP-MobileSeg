@@ -121,6 +121,11 @@ def merge_test_config(cfg, args):
         test_config.pop('aug_eval')
     if 'auc_roc' in test_config:
         test_config.pop('auc_roc')
+    # Eval-only options are invalid for predict() and must not be forwarded.
+    if 'compute_area_rer' in test_config:
+        test_config.pop('compute_area_rer')
+    if 'eval_num_workers' in test_config:
+        test_config.pop('eval_num_workers')
     if args.aug_pred:
         test_config['aug_pred'] = args.aug_pred
         test_config['scales'] = args.scales

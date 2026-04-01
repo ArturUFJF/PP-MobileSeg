@@ -179,6 +179,22 @@ def main(args):
                  opts=args.opts)
     builder = SegBuilder(cfg)
 
+    checkpoint_cfg = cfg.dic.get('checkpoint', {})
+    # If CLI values are untouched defaults, prefer checkpoint values from config.
+    effective_save_dir = args.save_dir
+    if args.save_dir == './output' and checkpoint_cfg.get('save_dir', None):
+        effective_save_dir = checkpoint_cfg['save_dir']
+
+    effective_save_interval = args.save_interval
+    if args.save_interval == 1000 and checkpoint_cfg.get('save_interval',
+                                                         None) is not None:
+        effective_save_interval = checkpoint_cfg['save_interval']
+
+    effective_keep_checkpoint_max = args.keep_checkpoint_max
+    if args.keep_checkpoint_max == 5 and checkpoint_cfg.get(
+            'keep_checkpoint_max', None) is not None:
+        effective_keep_checkpoint_max = checkpoint_cfg['keep_checkpoint_max']
+
     early_stop_cfg = cfg.dic.get('early_stop', {})
     early_stop_intervals = args.early_stop_intervals
     if early_stop_intervals is None:
@@ -197,11 +213,12 @@ def main(args):
     utils.set_cv2_num_threads(args.num_workers)
     uniform_output_enabled = cfg.dic.get("uniform_output_enabled", False)
     if uniform_output_enabled:
-        if not os.path.exists(args.save_dir):
-            os.makedirs(args.save_dir)
-        if os.path.exists(os.path.join(args.save_dir, "train_result.json")):
-            os.remove(os.path.join(args.save_dir, "train_result.json"))
-        with open(os.path.join(args.save_dir, "config.yaml"), "w") as f:
+        if not os.path.exists(effective_save_dir):
+            os.makedirs(effective_save_dir)
+        if os.path.exists(os.path.join(effective_save_dir,
+                                       "train_result.json")):
+            os.remove(os.path.join(effective_save_dir, "train_result.json"))
+        with open(os.path.join(effective_save_dir, "config.yaml"), "w") as f:
             yaml.dump(cfg.dic, f)
     print_mem_info = cfg.dic.pop('print_mem_info', True)
     shuffle = cfg.dic['train_dataset'].pop('shuffle', True)
@@ -240,19 +257,19 @@ def main(args):
           train_dataset,
           val_dataset=val_dataset,
           optimizer=optimizer,
-          save_dir=args.save_dir,
+                    save_dir=effective_save_dir,
           iters=cfg.iters,
           batch_size=cfg.batch_size,
             early_stop_intervals=early_stop_intervals,
             early_stop_min_improvement=early_stop_min_improvement,
           resume_model=args.resume_model,
-          save_interval=args.save_interval,
+                    save_interval=effective_save_interval,
           log_iters=args.log_iters,
           num_workers=args.num_workers,
           use_vdl=args.use_vdl,
           use_ema=args.use_ema,
           losses=loss,
-          keep_checkpoint_max=args.keep_checkpoint_max,
+                    keep_checkpoint_max=effective_keep_checkpoint_max,
           test_config=cfg.test_config,
           precision=args.precision,
           amp_level=args.amp_level,

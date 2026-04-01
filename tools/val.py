@@ -151,8 +151,14 @@ def main(args):
         utils.load_entire_model(model, args.model_path)
         logger.info('Loaded trained weights successfully.')
     val_dataset = builder.val_dataset
-
-    evaluate(model, val_dataset, num_workers=args.num_workers, **test_config)
+    eval_test_config = dict(test_config)
+    eval_num_workers = eval_test_config.pop('eval_num_workers',
+                                            args.num_workers)
+    evaluate(
+        model,
+        val_dataset,
+        num_workers=int(eval_num_workers),
+        **eval_test_config)
 
 
 if __name__ == '__main__':

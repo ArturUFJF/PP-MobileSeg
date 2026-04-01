@@ -1,25 +1,15 @@
 _base_: '../_base_/dimensionamento_foliar.yml'
 
-batch_size: 12  # ajuste conforme sua GPU
+batch_size: 8  # ajuste conforme sua GPU
 num_workers: 6  # ajuste conforme sua CPU
-iters: 15000
+iters: 10000 
 
 early_stop:
-  intervals: 5
+  intervals: 3
   min_improvement: 0.001
 
 precision: fp16
 amp_level: O1
-
-#train_dataset:
-  #transforms:
-  #- type: RandomHorizontalFlip
-  #- type: RandomVerticalFlip
-  #- type: RandomDistort
-  #  brightness_range: 0.12
-  #  contrast_range: 0.12
-  #  saturation_range: 0.12
-  #- type: Normalize
 
 train_dataset:
   transforms:
@@ -28,7 +18,7 @@ train_dataset:
     max_scale_factor: 2.0
     scale_step_size: 0.25
   - type: RandomPaddingCrop
-    crop_size: [640, 640]
+    crop_size: [768, 768]
     category_max_ratio: 0.70
     ignore_index: 255
   - type: RandomHorizontalFlip
@@ -36,9 +26,9 @@ train_dataset:
   - type: RandomVerticalFlip
     prob: 0.1
   - type: RandomDistort
-    brightness_range: 0.15
-    contrast_range: 0.15
-    saturation_range: 0.15
+    brightness_range: 0.08
+    contrast_range: 0.08
+    saturation_range: 0.08
     brightness_prob: 0.5
     contrast_prob: 0.5
     saturation_prob: 0.5
@@ -98,8 +88,12 @@ model:
 # Configurações de checkpoint e logging
 checkpoint:
   save_dir: output/pp_mobileseg_dimensionamento_foliar
-  save_interval: 500
+  save_interval: 1000
   keep_checkpoint_max: 5
+
+test_config:
+  compute_area_rer: False
+  eval_num_workers: 2
 
 log_config:
   name: pp_mobileseg_dimensionamento_foliar

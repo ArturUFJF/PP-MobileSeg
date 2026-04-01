@@ -386,19 +386,25 @@ def train(model,
 
             if (iter % save_interval == 0 or iter == iters) and (val_dataset
                                                                  is not None):
-                num_workers = 6 if num_workers > 0 else 0
-
                 if test_config is None:
                     test_config = {}
+                eval_test_config = dict(test_config)
+                # Keep eval data loading configurable to avoid CPU spikes.
+                eval_num_workers = eval_test_config.pop('eval_num_workers',
+                                                        None)
+                if eval_num_workers is None:
+                    eval_num_workers = min(2, num_workers) if num_workers > 0 else 0
+                else:
+                    eval_num_workers = int(eval_num_workers)
 
                 (mean_iou, acc, class_iou, _, _, avg_RER_leaf, std_RER_leaf,
                  avg_RER_marker, std_RER_marker) = evaluate(
                     model,
                     val_dataset,
-                    num_workers=num_workers,
+                    num_workers=eval_num_workers,
                     precision=precision,
                     amp_level=amp_level,
-                    **test_config)
+                    **eval_test_config)
 
                 if use_ema:
                     # evaluate now returns additional area RER statistics
@@ -407,10 +413,10 @@ def train(model,
                      ema_std_RER_marker) = evaluate(
                         ema_model,
                         val_dataset,
-                        num_workers=num_workers,
+                        num_workers=eval_num_workers,
                         precision=precision,
                         amp_level=amp_level,
-                        **test_config)
+                        **eval_test_config)
 
                 # --- WANDB LOG: EVAL ---
                 if paddle.distributed.ParallelEnv().local_rank == 0:
@@ -649,6 +655,26 @@ def train(model,
                     if stop_status:
                         break
                 model.train()
+
+            if (iter % save_interval == 0 or iter == iters) and (val_dataset
+                                                                 is None) and local_rank == 0:
+                current_save_dir = os.path.join(save_dir, "iter_{}".format(iter))
+                if not os.path.isdir(current_save_dir):
+                    os.makedirs(current_save_dir)
+                paddle.save(model.state_dict(),
+                            os.path.join(current_save_dir, 'model.pdparams'))
+                paddle.save(optimizer.state_dict(),
+                            os.path.join(current_save_dir, 'model.pdopt'))
+
+                # Keep the same checkpoint retention policy when eval is disabled.
+                save_models.append(current_save_dir)
+                if len(save_models) > keep_checkpoint_max > 0:
+                    model_to_remove = save_models.popleft()
+                    shutil.rmtree(model_to_remove)
+
+                no_eval_states_dict = {'iter': iter}
+                paddle.save(no_eval_states_dict,
+                            os.path.join(current_save_dir, 'model.pdstates'))
 
             batch_start = time.time()
 
