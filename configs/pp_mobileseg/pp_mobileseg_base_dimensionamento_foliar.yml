@@ -1,11 +1,11 @@
 _base_: '../_base_/dimensionamento_foliar.yml'
 
-batch_size: 8  # ajuste conforme sua GPU
+batch_size: 9  # ajuste conforme sua GPU
 num_workers: 6  # ajuste conforme sua CPU
-iters: 10000 
+iters: 8000 
 
 early_stop:
-  intervals: 3
+  intervals: 6
   min_improvement: 0.001
 
 precision: fp16
@@ -32,6 +32,22 @@ train_dataset:
     brightness_prob: 0.5
     contrast_prob: 0.5
     saturation_prob: 0.5
+  - type: RandomBlur
+    prob: 0.12
+  - type: RandomNoise
+    prob: 0.08
+  - type: Normalize
+
+val_dataset:
+  transforms:
+  - type: Resize
+    target_size: [768, 768]
+  - type: Normalize
+
+test_dataset:
+  transforms:
+  - type: Resize
+    target_size: [768, 768]
   - type: Normalize
 
 optimizer:
@@ -66,15 +82,17 @@ loss:
   types:
     - type: MixedLoss
       losses:
-        - type: CrossEntropyLoss
-          #weight: [0.2, 1.0, 12.0]  # fundo, folha, marcador
+        - type: OhemCrossEntropyLoss
+          thresh: 0.85
+          min_kept: 80000
+          weight: [1.0, 2.5] # penaliza mais o fundo quando ele vira folha
         - type: LovaszSoftmaxLoss
-      coef: [0.8, 0.2] # ajustando coeficiente para enfatizar CrossEntropyLoss, já que LovaszSoftmaxLoss pode ser instável no início do treinamento
+      coef: [0.85, 0.15] # OHEM continua dominante, Lovasz só ajuda no contorno
   coef: [1.0]
 
 model:
   type: PPMobileSegOnly
-  num_classes: 3  # fundo + folha + quadrado
+  num_classes: 2  # fundo + (folha + quadrado)
   backbone:
     type: MobileSeg_Base
     #inj_type: AAMSx8 //Desativando VIM
@@ -83,17 +101,17 @@ model:
   
   # Pode ser true e congelar tudo ou ser um número N e congelar os N primeiros blocos do backbone.
   #freeze_backbone: 3
-  upsample: intepolate
+  upsample: interpolate
 
 # Configurações de checkpoint e logging
 checkpoint:
   save_dir: output/pp_mobileseg_dimensionamento_foliar
-  save_interval: 1000
-  keep_checkpoint_max: 5
+  save_interval: 250
+  keep_checkpoint_max: 2
 
 test_config:
   compute_area_rer: False
-  eval_num_workers: 2
+  eval_num_workers: 1
 
 log_config:
   name: pp_mobileseg_dimensionamento_foliar

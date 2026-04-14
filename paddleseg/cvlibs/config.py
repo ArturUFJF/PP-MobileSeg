@@ -170,7 +170,18 @@ def parse_from_yaml(path: str):
             base_dic = parse_from_yaml(base_path)
             dic = merge_config_dicts(dic, base_dic)
 
-    return dic
+    return _remove_internal_keys(dic)
+
+
+def _remove_internal_keys(obj):
+    if isinstance(obj, dict):
+        return {
+            key: _remove_internal_keys(val)
+            for key, val in obj.items() if key != _INHERIT_KEY
+        }
+    if isinstance(obj, list):
+        return [_remove_internal_keys(item) for item in obj]
+    return obj
 
 
 def merge_config_dicts(dic, base_dic):
