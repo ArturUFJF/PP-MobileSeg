@@ -5,7 +5,7 @@ num_workers: 6  # ajuste conforme sua CPU
 iters: 8000 
 
 early_stop:
-  intervals: 6
+  intervals: 7
   min_improvement: 0.001
 
 precision: fp16
@@ -40,14 +40,14 @@ train_dataset:
 
 val_dataset:
   transforms:
-  - type: Resize
-    target_size: [768, 768]
+  #- type: Resize
+  #  target_size: [768, 768]
   - type: Normalize
 
 test_dataset:
   transforms:
-  - type: Resize
-    target_size: [768, 768]
+  #- type: Resize
+  #  target_size: [768, 768]
   - type: Normalize
 
 optimizer:
