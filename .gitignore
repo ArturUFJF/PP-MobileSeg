@@ -130,3 +130,7 @@ output/
 
 # WandB
 wandb/
+
+config_yolo.json
+estimated_metrics.csv
+metrics_estimation_yolo.py
