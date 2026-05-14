@@ -397,26 +397,40 @@ def train(model,
                 else:
                     eval_num_workers = int(eval_num_workers)
 
-                (mean_iou, acc, class_iou, _, _, avg_RER_leaf, std_RER_leaf,
-                 avg_RER_marker, std_RER_marker) = evaluate(
+                eval_results = evaluate(
                     model,
                     val_dataset,
                     num_workers=eval_num_workers,
                     precision=precision,
                     amp_level=amp_level,
                     **eval_test_config)
+                if len(eval_results) == 10:
+                    (mean_iou, acc, class_iou, _, _, avg_RER_leaf,
+                     std_RER_leaf, avg_RER_marker, std_RER_marker,
+                     miou_otsu) = eval_results
+                else:
+                    (mean_iou, acc, class_iou, _, _, avg_RER_leaf,
+                     std_RER_leaf, avg_RER_marker, std_RER_marker) = eval_results
+                    miou_otsu = None
 
                 if use_ema:
                     # evaluate now returns additional area RER statistics
-                    (ema_mean_iou, ema_acc, _, _, _, ema_avg_RER_leaf,
-                     ema_std_RER_leaf, ema_avg_RER_marker,
-                     ema_std_RER_marker) = evaluate(
+                    ema_results = evaluate(
                         ema_model,
                         val_dataset,
                         num_workers=eval_num_workers,
                         precision=precision,
                         amp_level=amp_level,
                         **eval_test_config)
+                    if len(ema_results) == 10:
+                        (ema_mean_iou, ema_acc, _, _, _, ema_avg_RER_leaf,
+                         ema_std_RER_leaf, ema_avg_RER_marker,
+                         ema_std_RER_marker, ema_miou_otsu) = ema_results
+                    else:
+                        (ema_mean_iou, ema_acc, _, _, _, ema_avg_RER_leaf,
+                         ema_std_RER_leaf, ema_avg_RER_marker,
+                         ema_std_RER_marker) = ema_results
+                        ema_miou_otsu = None
 
                 # --- WANDB LOG: EVAL ---
                 if paddle.distributed.ParallelEnv().local_rank == 0:
@@ -431,6 +445,10 @@ def train(model,
                             "eval/avg_RER_marker": avg_RER_marker,
                             "eval/std_RER_marker": std_RER_marker,
                         }
+                        if miou_otsu is not None:
+                            eval_log["eval/mIoU_Otsu"] = miou_otsu
+                        if use_ema and ema_miou_otsu is not None:
+                            eval_log["eval/ema_mIoU_Otsu"] = ema_miou_otsu
                         if class_iou is not None:
                             for class_idx, value in enumerate(np.asarray(class_iou).tolist()):
                                 eval_log[f"eval/class_mIoU_{class_idx}"] = float(value)

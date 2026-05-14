@@ -93,6 +93,10 @@ def parse_args():
         type=bool,
         default=False)
     parser.add_argument(
+        '--compute_otsu_iou',
+        help='Whether to compute IoU after Otsu thresholding during validation.',
+        action='store_true')
+    parser.add_argument(
         '--opts',
         help='Update the key-value pairs of all options.',
         default=None,
@@ -120,6 +124,8 @@ def merge_test_config(cfg, args):
         test_config['stride'] = args.stride
     if args.use_multilabel:
         test_config['use_multilabel'] = args.use_multilabel
+    if args.compute_otsu_iou:
+        test_config['compute_otsu_iou'] = True
     return test_config
 
 

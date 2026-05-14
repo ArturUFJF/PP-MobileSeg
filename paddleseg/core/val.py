@@ -35,6 +35,7 @@ def evaluate(model,
              stride=None,
              crop_size=None,
              compute_area_rer=False,
+             compute_otsu_iou=False,
              precision='fp32',
              amp_level='O1',
              num_workers=0,
@@ -58,6 +59,8 @@ def evaluate(model,
             It should be provided when `is_slide` is True.
         compute_area_rer (bool, optional): Whether to compute per-sample area RER statistics.
             This can be expensive for very large images. Default: False.
+        compute_otsu_iou (bool, optional): Whether to compute IoU after Otsu thresholding.
+            Default: False.
         precision (str, optional): Use AMP if precision='fp16'. If precision='fp32', the evaluation is normal.
         amp_level (str, optional): Auto mixed precision level. Accepted values are “O1” and “O2”: O1 represent mixed precision, the input data type of each operator will be casted by white_list and black_list; O2 represent Pure fp16, all operators parameters and input data will be casted to fp16, except operators in black_list, don’t support fp16 kernel and batchnorm. Default is O1(amp)
         num_workers (int, optional): Num workers for data loader. Default: 0.
@@ -89,6 +92,9 @@ def evaluate(model,
     intersect_area_all = paddle.zeros([1], dtype='int64')
     pred_area_all = paddle.zeros([1], dtype='int64')
     label_area_all = paddle.zeros([1], dtype='int64')
+    intersect_area_otsu_all = paddle.zeros([1], dtype='int64') if compute_otsu_iou else None
+    pred_area_otsu_all = paddle.zeros([1], dtype='int64') if compute_otsu_iou else None
+    label_area_otsu_all = paddle.zeros([1], dtype='int64') if compute_otsu_iou else None
     logits_all = None
     label_all = None
 
@@ -240,6 +246,16 @@ def evaluate(model,
                 ignore_index=eval_dataset.ignore_index,
                 use_multilabel=use_multilabel)
 
+            if compute_otsu_iou:
+                (intersect_area_otsu, pred_area_otsu,
+                 label_area_otsu) = metrics.calculate_area_otsu(
+                     logits,
+                     label,
+                     eval_dataset.num_classes,
+                     ignore_index=eval_dataset.ignore_index,
+                     positive_class=1,
+                     use_multilabel=use_multilabel)
+
             # Gather from all ranks
             if nranks > 1:
                 intersect_area_list = []
@@ -262,10 +278,38 @@ def evaluate(model,
                         i]
                     pred_area_all = pred_area_all + pred_area_list[i]
                     label_area_all = label_area_all + label_area_list[i]
+
+                if compute_otsu_iou:
+                    intersect_area_otsu_list = []
+                    pred_area_otsu_list = []
+                    label_area_otsu_list = []
+                    paddle.distributed.all_gather(intersect_area_otsu_list,
+                                                  intersect_area_otsu)
+                    paddle.distributed.all_gather(pred_area_otsu_list,
+                                                  pred_area_otsu)
+                    paddle.distributed.all_gather(label_area_otsu_list,
+                                                  label_area_otsu)
+
+                    if (iter + 1) * nranks > len(eval_dataset):
+                        valid = len(eval_dataset) - iter * nranks
+                        intersect_area_otsu_list = intersect_area_otsu_list[:valid]
+                        pred_area_otsu_list = pred_area_otsu_list[:valid]
+                        label_area_otsu_list = label_area_otsu_list[:valid]
+
+                    for i in range(len(intersect_area_otsu_list)):
+                        intersect_area_otsu_all = intersect_area_otsu_all + intersect_area_otsu_list[
+                            i]
+                        pred_area_otsu_all = pred_area_otsu_all + pred_area_otsu_list[i]
+                        label_area_otsu_all = label_area_otsu_all + label_area_otsu_list[i]
             else:
                 intersect_area_all = intersect_area_all + intersect_area
                 pred_area_all = pred_area_all + pred_area
                 label_area_all = label_area_all + label_area
+
+                if compute_otsu_iou:
+                    intersect_area_otsu_all = intersect_area_otsu_all + intersect_area_otsu
+                    pred_area_otsu_all = pred_area_otsu_all + pred_area_otsu
+                    label_area_otsu_all = label_area_otsu_all + label_area_otsu
 
                 if auc_roc:
                     logits = F.softmax(logits, axis=1)
@@ -295,6 +339,11 @@ def evaluate(model,
         *metrics_input)
     kappa = metrics.kappa(*metrics_input)
     class_dice, mdice = metrics.dice(*metrics_input)
+    miou_otsu = None
+    if compute_otsu_iou:
+        otsu_metrics_input = (intersect_area_otsu_all, pred_area_otsu_all,
+                              label_area_otsu_all)
+        _, miou_otsu = metrics.mean_iou(*otsu_metrics_input)
 
     avg_RER_leaf = float('nan')
     std_RER_leaf = float('nan')
@@ -327,8 +376,12 @@ def evaluate(model,
         auc_infor = ' Auc_roc: {:.4f}'.format(auc_roc)
 
     if print_detail:
-        infor = "[EVAL] #Images: {} mIoU: {:.4f} Acc: {:.4f} Kappa: {:.4f} Dice: {:.4f}".format(
-            len(eval_dataset), miou, acc, kappa, mdice)
+        if miou_otsu is not None:
+            infor = "[EVAL] #Images: {} mIoU: {:.4f} mIoU_Otsu: {:.4f} Acc: {:.4f} Kappa: {:.4f} Dice: {:.4f}".format(
+                len(eval_dataset), miou, miou_otsu, acc, kappa, mdice)
+        else:
+            infor = "[EVAL] #Images: {} mIoU: {:.4f} Acc: {:.4f} Kappa: {:.4f} Dice: {:.4f}".format(
+                len(eval_dataset), miou, acc, kappa, mdice)
         infor = infor + auc_infor if auc_roc else infor
         logger.info(infor)
         logger.info("[EVAL] Class IoU: \n" + str(np.round(class_iou, 4)))
@@ -338,5 +391,7 @@ def evaluate(model,
         if compute_area_rer:
             logger.info("[EVAL] Area RER (leaf)  : avg={:.4f}%  std={:.4f}%".format(avg_RER_leaf, std_RER_leaf))
             logger.info("[EVAL] Area RER (marker): avg={:.4f}%  std={:.4f}%".format(avg_RER_marker, std_RER_marker))
-    # Return classic metrics plus area RER statistics
+    # Return classic metrics plus area RER statistics, and Otsu mIoU when requested.
+    if compute_otsu_iou:
+        return miou, acc, class_iou, class_precision, kappa, avg_RER_leaf, std_RER_leaf, avg_RER_marker, std_RER_marker, miou_otsu
     return miou, acc, class_iou, class_precision, kappa, avg_RER_leaf, std_RER_leaf, avg_RER_marker, std_RER_marker

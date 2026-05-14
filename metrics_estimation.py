@@ -201,6 +201,61 @@ def connected_components(mask: np.ndarray, class_id: int, min_px: int) -> List[C
     return comps
 
 
+def connected_components_all(mask: np.ndarray, min_px: int, background_id: int = 0) -> List[Component]:
+    """Extrai todos os componentes conexos de uma mascara, ignorando o background."""
+    if mask.ndim != 2:
+        raise ValueError(f"Expected a 2D mask, got shape={mask.shape}")
+
+    foreground = (mask != background_id).astype(np.uint8)
+    n_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(foreground, connectivity=8)
+
+    comps: List[Component] = []
+    for comp_id in range(1, n_labels):
+        area = float(stats[comp_id, cv2.CC_STAT_AREA])
+        if area < min_px:
+            continue
+
+        x = int(stats[comp_id, cv2.CC_STAT_LEFT])
+        y = int(stats[comp_id, cv2.CC_STAT_TOP])
+        w = int(stats[comp_id, cv2.CC_STAT_WIDTH])
+        h = int(stats[comp_id, cv2.CC_STAT_HEIGHT])
+
+        comp_mask = labels == comp_id
+        comp_u8 = comp_mask.astype(np.uint8)
+        contours, _ = cv2.findContours(comp_u8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        perimeter = 0.0
+        length = 0.0
+        for cnt in contours:
+            perimeter += float(cv2.arcLength(cnt, True))
+            if len(cnt) >= 5:
+                pts = cnt.reshape(-1, 2).astype(np.float32)
+                mean, eigenvectors = cv2.PCACompute(pts, mean=None)
+                proj = cv2.PCAProject(pts, mean, eigenvectors)
+                min_proj = np.min(proj, axis=0)
+                max_proj = np.max(proj, axis=0)
+                cand = float(max(max_proj[0] - min_proj[0], max_proj[1] - min_proj[1]))
+                length = max(length, cand)
+            else:
+                (_, _), (rw, rh), _ = cv2.minAreaRect(cnt)
+                length = max(length, float(max(rw, rh)))
+
+        cx, cy = centroids[comp_id]
+        comps.append(
+            Component(
+                comp_id=comp_id,
+                mask=comp_mask,
+                area_px=area,
+                perimeter_px=perimeter,
+                length_px=length,
+                bbox=(x, y, w, h),
+                centroid=(float(cx), float(cy)),
+            )
+        )
+
+    return comps
+
+
 def component_from_binary_mask(mask_bool: np.ndarray) -> Optional[Component]:
     """
     Converte uma mascara binaria unica em um objeto Component.
@@ -570,86 +625,92 @@ def map_gt_to_xml(
     return out, score
 
 
-def is_square_by_geometry(comp: Component, aspect_threshold: float = 0.70,
-                          perim_tolerance: float = 0.30) -> float:
+def find_marker_by_geometry(mask: np.ndarray) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
     """
-    Calcula um score de "quadrado-ness" para um componente.
-    
-    Heurísticas:
-    - aspecto_ratio: min(w,h) / max(w,h) proximo de 1 => mais quadrado
-    - perimetro esperado para quadrado perfeito: 4*sqrt(area)
-    - se real proximo de esperado => mais quadrado
-    
-    Retorna score entre 0 e 1: 1 = quadrado perfeito, 0 = nao e quadrado.
+    Encontra marcador (quadrado de referência) pela geometria usando algoritmo de IC.
+    Desenvolvido por colega da IC para robustez aprimorada.
+
+    Prioriza contornos que:
+    - Têm aspect_ratio próximo de 1.0 (weight 5) — quadrado ideal
+    - Preenchem bem o retângulo mínimo (weight 3) — fill_ratio próximo de 1.0
+    - São maiores (weight: 1/área) — favor a objetos principais
+
+    Args:
+        mask: máscara binária numpy (bool ou uint8 0/255) com potencialmente múltiplos contornos.
+
+    Returns:
+        (marker_mask, best_contour): máscara do melhor candidato e o contorno OpenCV,
+        ou (None, None) se nenhum candidato atender MIN_AREA.
     """
-    x, y, w, h = comp.bbox
-    if w <= 0 or h <= 0:
-        return 0.0
-
-    # Area relativa no frame completo: marcador tende a ser pequeno.
-    img_area = float(comp.mask.size) if comp.mask is not None else 0.0
-    area_ratio = (comp.area_px / img_area) if img_area > 0 else 1.0
-
-    # Aspecto ratio: quanto mais proximo de 1, melhor.
-    aspect = min(w, h) / max(w, h) if max(w, h) > 0 else 0.0
-    if aspect < aspect_threshold:
-        return 0.0
-    aspect_score = aspect
-
-    # Bbox fill: quadrado tende a preencher bem a bbox; folhas tem recortes/concavidades.
-    bbox_area = float(w * h)
-    fill_ratio = (comp.area_px / bbox_area) if bbox_area > 0 else 0.0
-    fill_score = max(0.0, min(fill_ratio, 1.0))
-
-    # Verifica numero de vertices aproximados no contorno principal.
-    comp_u8 = comp.mask.astype(np.uint8)
-    contours, _ = cv2.findContours(comp_u8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if contours:
-        cnt = max(contours, key=cv2.contourArea)
-        peri = cv2.arcLength(cnt, True)
-        approx = cv2.approxPolyDP(cnt, 0.03 * peri, True) if peri > 0 else cnt
-        vertex_count = len(approx)
+    # Garante formato uint8 para cv2.findContours
+    if mask.dtype == np.bool_:
+        mask_uint8 = (mask * 255).astype(np.uint8)
+    elif mask.dtype == np.uint8:
+        mask_uint8 = mask
     else:
-        vertex_count = 0
-    if vertex_count == 4:
-        vertex_score = 1.0
-    elif vertex_count in (5, 6):
-        vertex_score = 0.65
-    elif vertex_count in (3, 7):
-        vertex_score = 0.35
-    else:
-        vertex_score = 0.10
+        mask_uint8 = (mask * 255).astype(np.uint8)
 
-    # Perímetro esperado para um quadrado de area A: 4*sqrt(A)
-    expected_perim = 4.0 * math.sqrt(comp.area_px)
-    if expected_perim <= 0:
-        return 0.0
-
-    actual_perim = comp.perimeter_px
-    perim_ratio = actual_perim / expected_perim
-
-    # Score diminui conforme desvia de 1.0, com tolerancia.
-    perim_score = 1.0 - min(abs(perim_ratio - 1.0), 1.0)
-    if perim_ratio > 1.0 + perim_tolerance or perim_ratio < 1.0 - perim_tolerance:
-        perim_score *= 0.5
-
-    # Prior de tamanho: marcador costuma ocupar pequena fracao da imagem.
-    if area_ratio <= 0.015:
-        size_score = 1.0
-    elif area_ratio >= 0.10:
-        size_score = 0.0
-    else:
-        size_score = max(0.0, 1.0 - (area_ratio - 0.015) / (0.10 - 0.015))
-
-    # Score final: combina forma + contorno + tamanho esperado de marcador.
-    score = (
-        0.30 * aspect_score +
-        0.20 * fill_score +
-        0.20 * vertex_score +
-        0.15 * perim_score +
-        0.15 * size_score
+    contours, _ = cv2.findContours(
+        mask_uint8,
+        cv2.RETR_EXTERNAL,
+        cv2.CHAIN_APPROX_SIMPLE
     )
-    return score
+
+    best_candidate = None
+    best_score = float("inf")
+    MIN_AREA = 500
+
+    for cnt in contours:
+        area = cv2.contourArea(cnt)
+
+        # Remove ruídos pequenos
+        if area < MIN_AREA:
+            continue
+
+        # Retângulo mínimo do contorno
+        rect = cv2.minAreaRect(cnt)
+        (_, _), (w, h), _ = rect
+
+        if w <= 1 or h <= 1:
+            continue
+
+        # Quão próximo de quadrado: aspect_ratio = max(w,h) / min(w,h)
+        aspect_ratio = max(w, h) / (min(w, h) + 1e-8)
+
+        # Quanto o contorno preenche o retângulo
+        rect_area = w * h
+        fill_ratio = area / (rect_area + 1e-8)
+
+        # Score menor = melhor candidato
+        score = 0.0
+
+        # Quadrado ideal -> ratio = 1; penalidade proporcional ao desvio
+        score += abs(aspect_ratio - 1.0) * 5
+
+        # Marcador deve preencher bem o retângulo; penalidade proporcional ao desvio
+        score += abs(fill_ratio - 1.0) * 3
+
+        # Favorece objetos maiores (menor 1/area)
+        score += 1.0 / (area + 1e-8)
+
+        if score < best_score:
+            best_score = score
+            best_candidate = cnt
+
+    if best_candidate is None:
+        return None, None
+
+    # Constrói máscara do melhor candidato
+    marker_mask = np.zeros(mask.shape, dtype=np.uint8)
+    cv2.drawContours(
+        marker_mask,
+        [best_candidate],
+        -1,
+        1,
+        -1
+    )
+
+    return marker_mask, best_candidate
 
 
 def get_square_component(
@@ -658,97 +719,66 @@ def get_square_component(
     fallback_policy: str = "largest",
 ) -> Optional[Component]:
     """
-    Seleciona o componente de referencia para o quadrado pela sua geometria.
-    
-    Prioriza componentes que:
-    1. Tem aspecto ratio proximo de 1 (width ≈ height)
-    2. Tem perimetro coerente com uma forma quadrada
-    
-    Se nenhum candidato "quadrado" for encontrado, faz fallback para o maior.
+    Seleciona o componente de referência (quadrado de marcador) pela sua geometria.
+
+    Usa algoritmo robusto desenvolvido por colega da IC (`find_marker_by_geometry`)
+    que favorece contornos quadrados com bom preenchimento.
+
+    Se nenhum candidato "quadrado" adequado for encontrado (MIN_AREA=500),
+    faz fallback para o maior ou menor componente conforme configurado.
+
+    Args:
+        components: lista de componentes extraídos da máscara de segmentação.
+        min_score: (não utilizado com novo algoritmo; mantido para compatibilidade).
+        fallback_policy: "smallest" ou "largest" para seleção em caso de falha.
+
+    Returns:
+        Component do marcador, ou None se lista vazia.
     """
     if not components:
         return None
 
-    # Tenta encontrar componentes com geometria de quadrado.
-    scored = [(is_square_by_geometry(c), i, c) for i, c in enumerate(components)]
-    # Em empate de score, prioriza o menor componente (marcador tende a ser menor que folhas).
-    scored.sort(key=lambda x: (x[0], -x[2].area_px), reverse=True)
+    # Combina máscara de todos os componentes para entrada ao algoritmo
+    if len(components) == 1:
+        mask_combined = components[0].mask.astype(np.uint8)
+    else:
+        mask_h, mask_w = components[0].mask.shape
+        mask_combined = np.zeros((mask_h, mask_w), dtype=np.uint8)
+        for comp in components:
+            mask_combined = np.logical_or(mask_combined, comp.mask).astype(np.uint8)
 
-    # Se o melhor candidato tem score razoavel, retorna ele.
-    if scored[0][0] >= min_score:
-        return scored[0][2]
+    # Chama algoritmo de detecção de marcador (IC colega)
+    marker_mask, best_cnt = find_marker_by_geometry(mask_combined)
 
-    # Fallback configuravel: em classe unica geralmente faz sentido priorizar menor area.
+    if marker_mask is None or best_cnt is None:
+        # Nenhum candidato adequado encontrado; aplica fallback
+        if fallback_policy == "smallest":
+            return min(components, key=lambda c: c.area_px)
+        return max(components, key=lambda c: c.area_px)
+
+    # Tenta encontrar qual componente corresponde melhor ao contorno retornado
+    marker_mask_bool = marker_mask.astype(bool)
+    best_iou = 0.0
+    best_comp = None
+
+    for comp in components:
+        iou = mask_iou(marker_mask_bool, comp.mask)
+        if iou > best_iou:
+            best_iou = iou
+            best_comp = comp
+
+    # Se encontrou correspondência significativa, retorna
+    if best_comp is not None and best_iou > 0.0:
+        return best_comp
+
+    # Fallback se ainda assim não encontrou correspondência boa
     if fallback_policy == "smallest":
         return min(components, key=lambda c: c.area_px)
     return max(components, key=lambda c: c.area_px)
 
 
-def select_single_class_marker(
-    components: List[Component],
-    reference_mask: Optional[np.ndarray],
-    min_square_score: float,
-    fallback_policy: str,
-) -> Optional[Component]:
-    """
-    Seleciona marcador no cenário de classe única (folha e quadrado compartilham id).
-
-    Estratégia alinhada ao fluxo YOLO funcional:
-    1) quando existir máscara de referência no XML (<pattern>), ancora a seleção nela;
-    2) sem referência, usa score geométrico de quadrado;
-    3) se o score for fraco, aplica fallback configurável (smallest/largest).
-    """
-    if not components:
-        return None
-
-    if reference_mask is not None:
-        by_ref = get_component_by_reference_mask(components, reference_mask)
-        if by_ref is not None:
-            return by_ref
-
-    return get_square_component(
-        components,
-        min_score=min_square_score,
-        fallback_policy=fallback_policy,
-    )
-
-
-def get_component_by_reference_mask(components: List[Component],
-                                    ref_mask: np.ndarray) -> Optional[Component]:
-    """
-    Seleciona o componente mais compatível com uma máscara de referência.
-
-    Estratégia:
-    1) maximiza IoU com a máscara de referência;
-    2) se IoU for zero para todos, usa menor distância entre centroides.
-    """
-    if not components:
-        return None
-
-    best_by_iou = None
-    best_iou = -1.0
-    for comp in components:
-        iou = mask_iou(comp.mask, ref_mask)
-        if iou > best_iou:
-            best_iou = iou
-            best_by_iou = comp
-
-    if best_by_iou is not None and best_iou > 0.0:
-        return best_by_iou
-
-    ref_comp = component_from_binary_mask(ref_mask)
-    if ref_comp is None:
-        return best_by_iou
-
-    rx, ry = ref_comp.centroid
-    return min(
-        components,
-        key=lambda c: (c.centroid[0] - rx) ** 2 + (c.centroid[1] - ry) ** 2,
-    )
-
-
 def safe_rer(estimated: float, real: float) -> float:
-    """Calcula erro relativo percentual (RER) com protecao para real <= 0."""
+    """Calcula erro relativo percentual (RER) com proteção para real <= 0."""
     if real <= 0:
         return -1.0
     return abs(estimated - real) / real * 100.0
@@ -982,27 +1012,14 @@ def main():
     square_id = int(class_ids.get("square", 2))
     class_colors_rgb = config.get("class_colors", [[0, 0, 0], [255, 0, 0], [0, 0, 255]])
 
-    mode = str(config.get("mode", "auto")).lower()
-    if mode not in {"auto", "single_class", "multi_class"}:
-        raise ValueError("config.mode must be one of: auto, single_class, multi_class")
-    if mode == "single_class":
-        use_single_class = True
-    elif mode == "multi_class":
-        use_single_class = False
-    else:
-        use_single_class = (leaf_id == square_id)
-
-    # Parametros do cenário single-class (alinhado ao fluxo YOLO funcional).
-    single_class_use_xml_pattern = bool(config.get("single_class_use_xml_pattern", True))
-    single_class_marker_min_score = float(config.get("single_class_marker_min_score", 0.5))
-    single_class_marker_fallback = str(
-        config.get("single_class_marker_fallback", "smallest")
-    ).lower()
-    if single_class_marker_fallback not in {"smallest", "largest"}:
-        raise ValueError("single_class_marker_fallback must be 'smallest' or 'largest'")
+    # Parametros da selecao geometrica do marcador.
+    marker_min_score = float(config.get("marker_min_score", 0.5))
+    marker_fallback = str(config.get("marker_fallback", "smallest")).lower()
+    if marker_fallback not in {"smallest", "largest"}:
+        raise ValueError("marker_fallback must be 'smallest' or 'largest'")
 
     # Mantem a linha do marcador no CSV, como no script YOLO.
-    write_square_row = bool(config.get("write_square_row", True))
+    write_square_row = bool(config.get("write_square_row", False))
 
     # fallback_square_side_cm: usado quando XML nao traz pattern-side.
     fallback_square_side_cm = config.get("fallback_square_side_cm", None)
@@ -1015,6 +1032,7 @@ def main():
         ensure_dir(results_path / "images" / "matches")
 
     # Lista de arquivos GT e mapa de predicoes por nome-base.
+    gt_mask_dir = Path(config["gt_mask_dir"]) if config.get("gt_mask_dir") else None
     gt_files = sorted([p for p in gt_mask_dir.iterdir() if p.is_file()])
     pred_by_stem = {p.stem: p for p in pred_mask_dir.iterdir() if p.is_file()}
 
@@ -1041,9 +1059,10 @@ def main():
         for gt_path in gt_files:
             # --- Resolucao de arquivos de entrada por imagem ---
             stem = gt_path.stem
+            display_name = gt_path.name
             pred_path = pred_by_stem.get(stem)
             if pred_path is None:
-                print(f"[WARN] Missing prediction for {gt_path.name}; skipping.")
+                print(f"[WARN] Missing prediction for {display_name}; skipping.")
                 continue
 
             # --- Leitura e normalizacao de tamanho das mascaras ---
@@ -1053,25 +1072,13 @@ def main():
             if pred_mask.shape != gt_mask.shape:
                 pred_mask = cv2.resize(pred_mask, (gt_mask.shape[1], gt_mask.shape[0]), interpolation=cv2.INTER_NEAREST)
 
-            # --- Extracao de objetos (folha e quadrado) ---
-            gt_all: List[Component] = []
-            pred_all: List[Component] = []
-            # Classe única: folhas e marcador compartilham a mesma classe.
-            if use_single_class:
-                gt_all = connected_components(gt_mask, leaf_id, args.min_object_px)
-                pred_all = connected_components(pred_mask, leaf_id, args.min_object_px)
-                gt_square = None
-                pred_square = None
-                gt_leafs = list(gt_all)
-                pred_leafs = list(pred_all)
-            else:
-                gt_leafs = connected_components(gt_mask, leaf_id, args.min_object_px)
-                pred_leafs = connected_components(pred_mask, leaf_id, args.min_object_px)
-                gt_squares = connected_components(gt_mask, square_id, args.min_object_px)
-                pred_squares = connected_components(pred_mask, square_id, args.min_object_px)
-
-                gt_square = get_square_component(gt_squares)
-                pred_square = get_square_component(pred_squares)
+            # --- Extracao de objetos (classe-agnostica) ---
+            gt_all = connected_components_all(gt_mask, args.min_object_px, background_id=0)
+            pred_all = connected_components_all(pred_mask, args.min_object_px, background_id=0)
+            gt_square = get_square_component(gt_all, min_score=marker_min_score, fallback_policy=marker_fallback)
+            pred_square = get_square_component(pred_all, min_score=marker_min_score, fallback_policy=marker_fallback)
+            gt_leafs = [c for c in gt_all if gt_square is None or c.comp_id != gt_square.comp_id]
+            pred_leafs = [c for c in pred_all if pred_square is None or c.comp_id != pred_square.comp_id]
 
             # --- Leitura opcional de XML para medidas reais e fallback ---
             xml_leaf_info: List[XmlLeafInfo] = []
@@ -1108,7 +1115,7 @@ def main():
                         chosen_mode = "width"
                         chosen_score = score_w
                     print(
-                        f"[INFO] {gt_path.name}: xml_coord_mode=auto -> chosen='{chosen_mode}' (match_score={chosen_score:.4f})"
+                        f"[INFO] {display_name}: xml_coord_mode=auto -> chosen='{chosen_mode}' (match_score={chosen_score:.4f})"
                     )
                 else:
                     if xml_coord_mode not in {"width", "height"}:
@@ -1122,61 +1129,16 @@ def main():
                         xml_path, gt_mask.shape[1], gt_mask.shape[0],
                         xml_coord_mode)
 
-            # --- Fallback do quadrado de referencia usando <pattern> do XML ---
-            ref_square = None
-            if pattern_info is not None:
-                ref_square = component_from_binary_mask(pattern_info.mask)
-                if pattern_side_cm is None and pattern_info.pattern_side_cm is not None:
-                    pattern_side_cm = pattern_info.pattern_side_cm
-
-            # Em classe única, selecionamos marcador com prioridade para ancoragem no pattern.
-            if use_single_class:
-                reference_mask = ref_square.mask if (single_class_use_xml_pattern and ref_square is not None) else None
-                gt_square = select_single_class_marker(
-                    gt_all,
-                    reference_mask=reference_mask,
-                    min_square_score=single_class_marker_min_score,
-                    fallback_policy=single_class_marker_fallback,
-                )
-                pred_square = select_single_class_marker(
-                    pred_all,
-                    reference_mask=reference_mask,
-                    min_square_score=single_class_marker_min_score,
-                    fallback_policy=single_class_marker_fallback,
-                )
-
-                # Reconstroi listas de folhas removendo o marcador final escolhido.
-                gt_leafs = [
-                    c for c in gt_all
-                    if gt_square is None or c.comp_id != gt_square.comp_id
-                ]
-                pred_leafs = [
-                    c for c in pred_all
-                    if pred_square is None or c.comp_id != pred_square.comp_id
-                ]
-                # Atualiza mapeamento GT->XML após o refinamento da separação folha/marcador.
-                if xml_leaf_info:
-                    gt_to_xml, _ = map_gt_to_xml(gt_leafs, xml_leaf_info)
-
-            # Em multi-classe, se faltar quadrado nas mascaras, usa pattern do XML como referencia.
-            if not use_single_class and gt_square is None and ref_square is not None:
-                gt_square = ref_square
-                print(f"[INFO] {gt_path.name}: using XML pattern as GT square reference.")
-            if not use_single_class and pred_square is None and ref_square is not None:
-                pred_square = ref_square
-                print(f"[INFO] {gt_path.name}: using XML pattern as prediction square reference.")
-
+            # Detection must be independent from XML: do NOT use XML as fallback.
             if gt_square is None or pred_square is None:
-                print(
-                    f"[WARN] Missing square in GT/pred and XML pattern fallback unavailable for {gt_path.name}; skipping image."
-                )
+                print(f"[WARN] Missing square in GT or pred for {display_name}; skipping image (no XML fallback used).")
                 continue
 
             # pattern_side pode vir do XML ou de fallback no config.
             if pattern_side_cm is None:
                 pattern_side_cm = fallback_square_side_cm
             if pattern_side_cm is None:
-                print(f"[WARN] No pattern-side available for {gt_path.name}; physical estimates disabled.")
+                print(f"[WARN] No pattern-side available for {display_name}; physical estimates disabled.")
 
             # Base fisica do marcador: prioriza medidas reais do objeto <pattern>.
             if pattern_info is not None and pattern_info.real_area > 0:
@@ -1196,7 +1158,7 @@ def main():
                 square_biou = bbox_iou(gt_square.bbox, pred_square.bbox)
                 square_miou = mask_iou(gt_square.mask, pred_square.mask)
                 writer.writerow([
-                    gt_path.name,
+                    display_name,
                     -1,
                     gt_square.comp_id,
                     pred_square.comp_id,
@@ -1231,6 +1193,10 @@ def main():
                 # --- Calcula estimativas por objeto GT ---
                 pi, biou, iou, match_source = pred_by_gt.get(gi, (-1, 0.0, 0.0, "none"))
                 pred_comp = pred_leafs[pi] if pi >= 0 else None
+
+                # Only record CSV rows for GT leaves that actually matched a predicted object.
+                if pi < 0 or match_source == "none" or iou <= 0.0:
+                    continue
 
                 # Converte de pixel para unidade fisica via regra de tres com quadrado.
                 if real_square_area > 0 and gt_square.area_px > 0:
@@ -1269,7 +1235,7 @@ def main():
 
                 # Estrutura final gravada no CSV para auditoria e analise estatistica.
                 row = [
-                    gt_path.name,
+                    display_name,
                     leaf_index,
                     gi,
                     pi,
@@ -1322,7 +1288,7 @@ def main():
                     pred_square=pred_square,
                     matches=matches,
                     overlay_texts=overlay_texts,
-                    out_path=results_path / "images" / "matches" / gt_path.name,
+                    out_path=results_path / "images" / "matches" / display_name,
                 )
 
     print(f"Done. Results saved to: {out_csv}")

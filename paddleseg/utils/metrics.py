@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import numpy as np
+import cv2
 import paddle
 import paddle.nn.functional as F
 import sklearn.metrics as skmetrics
@@ -70,6 +71,66 @@ def calculate_area(pred,
             [0, 2, 3]).astype('int64')
 
     return intersect_area, pred_area, label_area
+
+
+def calculate_area_otsu(logits,
+                        label,
+                        num_classes,
+                        ignore_index=255,
+                        positive_class=1,
+                        use_multilabel=False):
+    """
+    Calculate intersect, prediction and label area after Otsu thresholding.
+
+    This keeps the classic IoU pipeline intact and derives a binary prediction
+    mask from the foreground probability map using Otsu per image.
+    """
+    if len(logits.shape) == 4:
+        if use_multilabel:
+            if logits.shape[1] <= positive_class:
+                raise ValueError(
+                    'positive_class={} is out of range for logits with shape {}'.format(
+                        positive_class, logits.shape))
+            prob = F.sigmoid(logits[:, positive_class:positive_class + 1, :, :])
+        else:
+            if logits.shape[1] == 1:
+                prob = F.sigmoid(logits)
+            else:
+                prob = F.softmax(logits, axis=1)[:, positive_class:positive_class + 1, :, :]
+    elif len(logits.shape) == 3:
+        prob = logits.unsqueeze(1)
+    else:
+        raise ValueError(
+            'The shape of logits is not supported for Otsu IoU: {}'.format(
+                logits.shape))
+
+    prob_np = prob.numpy()
+    pred_otsu = np.zeros_like(prob_np, dtype=np.uint8)
+    for idx in range(prob_np.shape[0]):
+        sample = np.squeeze(prob_np[idx])
+        sample_u8 = np.clip(sample * 255.0, 0, 255).astype(np.uint8)
+        _, sample_bin = cv2.threshold(sample_u8, 0, 1,
+                                      cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        pred_otsu[idx, 0] = sample_bin
+
+    pred_otsu = paddle.to_tensor(pred_otsu.astype('int64'))
+
+    if len(label.shape) == 4:
+        label = paddle.squeeze(label, axis=1)
+
+    label_otsu = paddle.cast(label == positive_class, 'int64')
+    if ignore_index is not None:
+        ignore_mask = label == ignore_index
+        label_otsu = paddle.where(ignore_mask,
+                                  paddle.full_like(label_otsu, ignore_index),
+                                  label_otsu)
+
+    return calculate_area(
+        pred_otsu,
+        label_otsu,
+        num_classes=2,
+        ignore_index=ignore_index,
+        use_multilabel=False)
 
 
 def auc_roc(logits, label, num_classes, ignore_index=None):
