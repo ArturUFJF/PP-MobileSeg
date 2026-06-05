@@ -1,10 +1,10 @@
 {
     "image_dir": "data/dimensionamento_foliar_full_oneclass/images",
-    "pred_mask_dir": "output/sota1/pred",
+    "pred_mask_dir": "output/pp_mobileseg_dimensionamento/pred_artigo",
     "gt_mask_dir": "data/dimensionamento_foliar_full_oneclass/annotations",
     "xml_dir": "data/dimensionamento_foliar_full_oneclass/xml",
     "xml_coord_mode": "auto",
-    "results_path": "output/metrics_estimation/sota2",
+    "results_path": "output/metrics_estimation/sota",
     "class_ids": {
         "background": 0,
         "leaf": 1,
@@ -14,8 +14,6 @@
         [128, 0, 0],
         [0, 128, 0]
     ],
-    "marker_min_score": 0.45,
-    "marker_fallback": "smallest",
     "write_square_row": true,
     "fallback_square_side_cm": null
 }

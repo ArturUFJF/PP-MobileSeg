@@ -35,6 +35,7 @@ class Component:
     area_px: float
     perimeter_px: float
     length_px: float
+    width_px: float
     bbox: Tuple[int, int, int, int]
     centroid: Tuple[float, float]
 
@@ -46,6 +47,7 @@ class XmlLeafInfo:
     real_area: float
     real_perimeter: float
     real_length: float
+    real_width: float
 
 
 @dataclass
@@ -54,6 +56,7 @@ class XmlPatternInfo:
     real_area: float
     real_perimeter: float
     real_length: float
+    real_width: float
     pattern_side_cm: Optional[float]
 
 
@@ -136,6 +139,38 @@ def load_mask(path: Path, class_colors_rgb: Optional[List[List[int]]] = None) ->
     raise ValueError(f"Unsupported mask format for {path}: shape={mask.shape}")
 
 
+def estimate_length_width_by_pca(mask_bool: np.ndarray) -> Tuple[float, float]:
+    """
+    Estima comprimento e largura em pixels via PCA da folha.
+
+    Fluxo:
+    1) Obtém pontos (x,y) da máscara binária.
+    2) Projeta os pontos nos eixos principais (PCA).
+    3) Rotaciona a folha para o sistema principal.
+    4) Mede a caixa envolvente alinhada aos eixos principais.
+    """
+    ys, xs = np.where(mask_bool)
+    if len(xs) == 0:
+        return 0.0, 0.0
+
+    pts = np.column_stack((xs, ys)).astype(np.float32)
+    if pts.shape[0] < 3:
+        x, y, w, h = cv2.boundingRect(pts.astype(np.int32))
+        return float(max(w, h)), float(min(w, h))
+
+    mean, eigenvectors = cv2.PCACompute(pts, mean=None)
+    if eigenvectors is None or eigenvectors.shape[0] < 2:
+        x, y, w, h = cv2.boundingRect(pts.astype(np.int32))
+        return float(max(w, h)), float(min(w, h))
+
+    proj = cv2.PCAProject(pts, mean, eigenvectors)
+    proj_int = np.round(proj).astype(np.int32)
+    x, y, w, h = cv2.boundingRect(proj_int)
+    length = float(max(w, h))
+    width = float(min(w, h))
+    return length, width
+
+
 def connected_components(mask: np.ndarray, class_id: int, min_px: int) -> List[Component]:
     """
     Extrai objetos de uma classe especifica usando componentes conexos.
@@ -153,8 +188,8 @@ def connected_components(mask: np.ndarray, class_id: int, min_px: int) -> List[C
     comps: List[Component] = []
     # comp_id=0 e background, por isso iniciamos em 1.
     for comp_id in range(1, n_labels):
-        area = float(stats[comp_id, cv2.CC_STAT_AREA])
-        if area < min_px:
+        area_stat = float(stats[comp_id, cv2.CC_STAT_AREA])
+        if area_stat < min_px:
             continue
 
         x = int(stats[comp_id, cv2.CC_STAT_LEFT])
@@ -168,22 +203,13 @@ def connected_components(mask: np.ndarray, class_id: int, min_px: int) -> List[C
         contours, _ = cv2.findContours(comp_u8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
         perimeter = 0.0
-        length = 0.0
+        contour_area = 0.0
         for cnt in contours:
+            contour_area += float(cv2.contourArea(cnt))
             perimeter += float(cv2.arcLength(cnt, True))
-            # Se houver pontos suficientes, usamos PCA para estimar eixo principal.
-            if len(cnt) >= 5:
-                pts = cnt.reshape(-1, 2).astype(np.float32)
-                mean, eigenvectors = cv2.PCACompute(pts, mean=None)
-                proj = cv2.PCAProject(pts, mean, eigenvectors)
-                min_proj = np.min(proj, axis=0)
-                max_proj = np.max(proj, axis=0)
-                cand = float(max(max_proj[0] - min_proj[0], max_proj[1] - min_proj[1]))
-                length = max(length, cand)
-            else:
-                # Fallback geometrico para contornos muito pequenos.
-                (_, _), (rw, rh), _ = cv2.minAreaRect(cnt)
-                length = max(length, float(max(rw, rh)))
+
+        area = contour_area if contour_area > 0 else area_stat
+        length, width = estimate_length_width_by_pca(comp_mask)
 
         cx, cy = centroids[comp_id]
         comps.append(
@@ -193,6 +219,7 @@ def connected_components(mask: np.ndarray, class_id: int, min_px: int) -> List[C
                 area_px=area,
                 perimeter_px=perimeter,
                 length_px=length,
+                width_px=width,
                 bbox=(x, y, w, h),
                 centroid=(float(cx), float(cy)),
             )
@@ -211,8 +238,8 @@ def connected_components_all(mask: np.ndarray, min_px: int, background_id: int =
 
     comps: List[Component] = []
     for comp_id in range(1, n_labels):
-        area = float(stats[comp_id, cv2.CC_STAT_AREA])
-        if area < min_px:
+        area_stat = float(stats[comp_id, cv2.CC_STAT_AREA])
+        if area_stat < min_px:
             continue
 
         x = int(stats[comp_id, cv2.CC_STAT_LEFT])
@@ -225,20 +252,13 @@ def connected_components_all(mask: np.ndarray, min_px: int, background_id: int =
         contours, _ = cv2.findContours(comp_u8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
         perimeter = 0.0
-        length = 0.0
+        contour_area = 0.0
         for cnt in contours:
+            contour_area += float(cv2.contourArea(cnt))
             perimeter += float(cv2.arcLength(cnt, True))
-            if len(cnt) >= 5:
-                pts = cnt.reshape(-1, 2).astype(np.float32)
-                mean, eigenvectors = cv2.PCACompute(pts, mean=None)
-                proj = cv2.PCAProject(pts, mean, eigenvectors)
-                min_proj = np.min(proj, axis=0)
-                max_proj = np.max(proj, axis=0)
-                cand = float(max(max_proj[0] - min_proj[0], max_proj[1] - min_proj[1]))
-                length = max(length, cand)
-            else:
-                (_, _), (rw, rh), _ = cv2.minAreaRect(cnt)
-                length = max(length, float(max(rw, rh)))
+
+        area = contour_area if contour_area > 0 else area_stat
+        length, width = estimate_length_width_by_pca(comp_mask)
 
         cx, cy = centroids[comp_id]
         comps.append(
@@ -248,6 +268,7 @@ def connected_components_all(mask: np.ndarray, min_px: int, background_id: int =
                 area_px=area,
                 perimeter_px=perimeter,
                 length_px=length,
+                width_px=width,
                 bbox=(x, y, w, h),
                 centroid=(float(cx), float(cy)),
             )
@@ -263,8 +284,7 @@ def component_from_binary_mask(mask_bool: np.ndarray) -> Optional[Component]:
     Usado principalmente para fallback do pattern vindo do XML.
     """
     comp_u8 = mask_bool.astype(np.uint8)
-    area = float(comp_u8.sum())
-    if area <= 0:
+    if comp_u8.sum() <= 0:
         return None
 
     # Bounding box por extremos dos pixels ativos.
@@ -278,20 +298,13 @@ def component_from_binary_mask(mask_bool: np.ndarray) -> Optional[Component]:
     contours, _ = cv2.findContours(comp_u8, cv2.RETR_EXTERNAL,
                                    cv2.CHAIN_APPROX_SIMPLE)
     perimeter = 0.0
-    length = 0.0
+    contour_area = 0.0
     for cnt in contours:
+        contour_area += float(cv2.contourArea(cnt))
         perimeter += float(cv2.arcLength(cnt, True))
-        if len(cnt) >= 5:
-            pts = cnt.reshape(-1, 2).astype(np.float32)
-            mean, eigenvectors = cv2.PCACompute(pts, mean=None)
-            proj = cv2.PCAProject(pts, mean, eigenvectors)
-            min_proj = np.min(proj, axis=0)
-            max_proj = np.max(proj, axis=0)
-            cand = float(max(max_proj[0] - min_proj[0], max_proj[1] - min_proj[1]))
-            length = max(length, cand)
-        else:
-            (_, _), (rw, rh), _ = cv2.minAreaRect(cnt)
-            length = max(length, float(max(rw, rh)))
+
+    area = contour_area if contour_area > 0 else float(comp_u8.sum())
+    length, width = estimate_length_width_by_pca(mask_bool)
 
     return Component(
         comp_id=1,
@@ -299,6 +312,7 @@ def component_from_binary_mask(mask_bool: np.ndarray) -> Optional[Component]:
         area_px=area,
         perimeter_px=perimeter,
         length_px=length,
+        width_px=width,
         bbox=bbox,
         centroid=centroid,
     )
@@ -501,10 +515,12 @@ def parse_xml_leaf_info(xml_path: Path, width: int, height: int,
         area_txt = dims.find("area").text if dims.find("area") is not None else "-1"
         per_txt = dims.find("perimeter").text if dims.find("perimeter") is not None else "-1"
         len_txt = dims.find("length").text if dims.find("length") is not None else "-1"
+        width_txt = dims.find("width").text if dims.find("width") is not None else "-1"
 
         area = float(area_txt) if area_txt != "NAva" else -1.0
         perimeter = float(per_txt) if per_txt != "NAva" else -1.0
         length = float(len_txt) if len_txt != "NAva" else -1.0
+        real_width = float(width_txt) if width_txt != "NAva" else -1.0
 
         index_node = obj.find("index")
         leaf_idx = -1
@@ -524,6 +540,7 @@ def parse_xml_leaf_info(xml_path: Path, width: int, height: int,
                 real_area=area,
                 real_perimeter=perimeter,
                 real_length=length,
+                real_width=real_width,
             )
         )
 
@@ -563,24 +580,29 @@ def parse_xml_pattern_info(xml_path: Path, width: int, height: int,
     real_area = -1.0
     real_perimeter = -1.0
     real_length = -1.0
+    real_width = -1.0
     dims = pattern_node.find("dimensions")
     if dims is not None:
         area_txt = dims.find("area").text if dims.find("area") is not None else "-1"
         per_txt = dims.find("perimeter").text if dims.find("perimeter") is not None else "-1"
         len_txt = dims.find("length").text if dims.find("length") is not None else "-1"
+        width_txt = dims.find("width").text if dims.find("width") is not None else "-1"
         real_area = float(area_txt) if area_txt != "NAva" else -1.0
         real_perimeter = float(per_txt) if per_txt != "NAva" else -1.0
         real_length = float(len_txt) if len_txt != "NAva" else -1.0
+        real_width = float(width_txt) if width_txt != "NAva" else -1.0
     elif pattern_side_cm is not None:
         real_area = pattern_side_cm * pattern_side_cm
         real_perimeter = pattern_side_cm * 4.0
         real_length = pattern_side_cm
+        real_width = pattern_side_cm
 
     return XmlPatternInfo(
         mask=polygon_to_mask(points, width, height),
         real_area=real_area,
         real_perimeter=real_perimeter,
         real_length=real_length,
+        real_width=real_width,
         pattern_side_cm=pattern_side_cm,
     )
 
@@ -627,20 +649,18 @@ def map_gt_to_xml(
 
 def find_marker_by_geometry(mask: np.ndarray) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
     """
-    Encontra marcador (quadrado de referência) pela geometria usando algoritmo de IC.
-    Desenvolvido por colega da IC para robustez aprimorada.
-
-    Prioriza contornos que:
-    - Têm aspect_ratio próximo de 1.0 (weight 5) — quadrado ideal
-    - Preenchem bem o retângulo mínimo (weight 3) — fill_ratio próximo de 1.0
-    - São maiores (weight: 1/área) — favor a objetos principais
+    Encontra marcador quadrado seguindo o método de teste:
+    1) contornos da máscara binária;
+    2) filtra áreas [500, 1010];
+    3) mantém razão de aspecto em [0.8, 1.2];
+    4) escolhe maior ocupação do retângulo envolvente (fill_ratio).
 
     Args:
         mask: máscara binária numpy (bool ou uint8 0/255) com potencialmente múltiplos contornos.
 
     Returns:
         (marker_mask, best_contour): máscara do melhor candidato e o contorno OpenCV,
-        ou (None, None) se nenhum candidato atender MIN_AREA.
+        ou (None, None) se nenhum candidato atender os critérios.
     """
     # Garante formato uint8 para cv2.findContours
     if mask.dtype == np.bool_:
@@ -657,14 +677,17 @@ def find_marker_by_geometry(mask: np.ndarray) -> Tuple[Optional[np.ndarray], Opt
     )
 
     best_candidate = None
-    best_score = float("inf")
-    MIN_AREA = 500
+    best_fill = -1.0
+    min_area = 300.0
+    max_area = 1e10
+    min_aspect = 0.8
+    max_aspect = 1.5
 
     for cnt in contours:
         area = cv2.contourArea(cnt)
 
-        # Remove ruídos pequenos
-        if area < MIN_AREA:
+        # Mantém apenas áreas no intervalo especificado.
+        if area < min_area or area > max_area:
             continue
 
         # Retângulo mínimo do contorno
@@ -674,27 +697,18 @@ def find_marker_by_geometry(mask: np.ndarray) -> Tuple[Optional[np.ndarray], Opt
         if w <= 1 or h <= 1:
             continue
 
-        # Quão próximo de quadrado: aspect_ratio = max(w,h) / min(w,h)
-        aspect_ratio = max(w, h) / (min(w, h) + 1e-8)
+        # Razão de aspecto do retângulo mínimo.
+        aspect_ratio = w / (h + 1e-8)
+        if aspect_ratio < min_aspect or aspect_ratio > max_aspect:
+            continue
 
         # Quanto o contorno preenche o retângulo
         rect_area = w * h
         fill_ratio = area / (rect_area + 1e-8)
 
-        # Score menor = melhor candidato
-        score = 0.0
-
-        # Quadrado ideal -> ratio = 1; penalidade proporcional ao desvio
-        score += abs(aspect_ratio - 1.0) * 5
-
-        # Marcador deve preencher bem o retângulo; penalidade proporcional ao desvio
-        score += abs(fill_ratio - 1.0) * 3
-
-        # Favorece objetos maiores (menor 1/area)
-        score += 1.0 / (area + 1e-8)
-
-        if score < best_score:
-            best_score = score
+        # Entre candidatos válidos, escolhe o de maior ocupação do retângulo.
+        if fill_ratio > best_fill:
+            best_fill = fill_ratio
             best_candidate = cnt
 
     if best_candidate is None:
@@ -715,22 +729,15 @@ def find_marker_by_geometry(mask: np.ndarray) -> Tuple[Optional[np.ndarray], Opt
 
 def get_square_component(
     components: List[Component],
-    min_score: float = 0.5,
-    fallback_policy: str = "largest",
 ) -> Optional[Component]:
     """
     Seleciona o componente de referência (quadrado de marcador) pela sua geometria.
 
-    Usa algoritmo robusto desenvolvido por colega da IC (`find_marker_by_geometry`)
-    que favorece contornos quadrados com bom preenchimento.
-
-    Se nenhum candidato "quadrado" adequado for encontrado (MIN_AREA=500),
-    faz fallback para o maior ou menor componente conforme configurado.
+    Usa o método geométrico com filtros explícitos de área/aspecto.
+    Não aplica fallback para evitar viés: se não encontrar candidato, retorna None.
 
     Args:
         components: lista de componentes extraídos da máscara de segmentação.
-        min_score: (não utilizado com novo algoritmo; mantido para compatibilidade).
-        fallback_policy: "smallest" ou "largest" para seleção em caso de falha.
 
     Returns:
         Component do marcador, ou None se lista vazia.
@@ -751,10 +758,7 @@ def get_square_component(
     marker_mask, best_cnt = find_marker_by_geometry(mask_combined)
 
     if marker_mask is None or best_cnt is None:
-        # Nenhum candidato adequado encontrado; aplica fallback
-        if fallback_policy == "smallest":
-            return min(components, key=lambda c: c.area_px)
-        return max(components, key=lambda c: c.area_px)
+        return None
 
     # Tenta encontrar qual componente corresponde melhor ao contorno retornado
     marker_mask_bool = marker_mask.astype(bool)
@@ -771,10 +775,7 @@ def get_square_component(
     if best_comp is not None and best_iou > 0.0:
         return best_comp
 
-    # Fallback se ainda assim não encontrou correspondência boa
-    if fallback_policy == "smallest":
-        return min(components, key=lambda c: c.area_px)
-    return max(components, key=lambda c: c.area_px)
+    return None
 
 
 def safe_rer(estimated: float, real: float) -> float:
@@ -782,6 +783,31 @@ def safe_rer(estimated: float, real: float) -> float:
     if real <= 0:
         return -1.0
     return abs(estimated - real) / real * 100.0
+
+
+def square_reference_pixels(
+    comp: Component,
+) -> Tuple[float, float, float]:
+    """
+    Retorna referências em pixel do quadrado (área, perímetro, lado)
+    usando o método fixo:
+    - área via contourArea;
+    - perímetro via arcLength;
+    - lado via perímetro/4.
+    """
+    comp_u8 = comp.mask.astype(np.uint8)
+    contours, _ = cv2.findContours(comp_u8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        area_px = comp.area_px
+        perim_px = comp.perimeter_px
+        side_px = perim_px / 4.0 if perim_px > 0 else 0.0
+        return area_px, perim_px, side_px
+
+    cnt = max(contours, key=cv2.contourArea)
+    area_px = comp.area_px
+    perim_px = comp.perimeter_px
+    side_px = perim_px / 4.0 if perim_px > 0 else 0.0
+    return area_px, perim_px, side_px
 
 
 def ensure_dir(path: Path):
@@ -1006,17 +1032,8 @@ def main():
     xml_dir = Path(config["xml_dir"]) if config.get("xml_dir") else None
     results_path = Path(config["results_path"])
 
-    # IDs de classe esperados pelo dataset de segmentacao.
-    class_ids = config.get("class_ids", {})
-    leaf_id = int(class_ids.get("leaf", 1))
-    square_id = int(class_ids.get("square", 2))
+    # Paleta usada apenas quando a predição vier pseudo-color.
     class_colors_rgb = config.get("class_colors", [[0, 0, 0], [255, 0, 0], [0, 0, 255]])
-
-    # Parametros da selecao geometrica do marcador.
-    marker_min_score = float(config.get("marker_min_score", 0.5))
-    marker_fallback = str(config.get("marker_fallback", "smallest")).lower()
-    if marker_fallback not in {"smallest", "largest"}:
-        raise ValueError("marker_fallback must be 'smallest' or 'largest'")
 
     # Mantem a linha do marcador no CSV, como no script YOLO.
     write_square_row = bool(config.get("write_square_row", False))
@@ -1054,6 +1071,7 @@ def main():
             "Real area", "Estimated area (A)", "Estimated area RER (A)", "Estimated area (P)", "Estimated area RER (P)",
             "Real perimeter", "Estimated perimeter (A)", "Estimated perimeter RER (A)", "Estimated perimeter (P)", "Estimated perimeter RER (P)",
             "Real length", "Estimated length (A)", "Estimated length RER (A)", "Estimated length (P)", "Estimated length RER (P)",
+            "Real width", "Estimated width (A)", "Estimated width RER (A)", "Estimated width (P)", "Estimated width RER (P)",
         ])
 
         for gt_path in gt_files:
@@ -1075,8 +1093,8 @@ def main():
             # --- Extracao de objetos (classe-agnostica) ---
             gt_all = connected_components_all(gt_mask, args.min_object_px, background_id=0)
             pred_all = connected_components_all(pred_mask, args.min_object_px, background_id=0)
-            gt_square = get_square_component(gt_all, min_score=marker_min_score, fallback_policy=marker_fallback)
-            pred_square = get_square_component(pred_all, min_score=marker_min_score, fallback_policy=marker_fallback)
+            gt_square = get_square_component(gt_all)
+            pred_square = get_square_component(pred_all)
             gt_leafs = [c for c in gt_all if gt_square is None or c.comp_id != gt_square.comp_id]
             pred_leafs = [c for c in pred_all if pred_square is None or c.comp_id != pred_square.comp_id]
 
@@ -1134,6 +1152,9 @@ def main():
                 print(f"[WARN] Missing square in GT or pred for {display_name}; skipping image (no XML fallback used).")
                 continue
 
+            gt_square_area_px, gt_square_perim_px, gt_square_side_px = square_reference_pixels(gt_square)
+            pred_square_area_px, pred_square_perim_px, pred_square_side_px = square_reference_pixels(pred_square)
+
             # pattern_side pode vir do XML ou de fallback no config.
             if pattern_side_cm is None:
                 pattern_side_cm = fallback_square_side_cm
@@ -1145,14 +1166,17 @@ def main():
                 real_square_area = pattern_info.real_area
                 real_square_perimeter = pattern_info.real_perimeter if pattern_info.real_perimeter > 0 else -1.0
                 real_square_length = pattern_info.real_length if pattern_info.real_length > 0 else -1.0
+                real_square_width = pattern_info.real_width if pattern_info.real_width > 0 else -1.0
             elif pattern_side_cm is not None:
                 real_square_area = pattern_side_cm * pattern_side_cm
                 real_square_perimeter = pattern_side_cm * 4.0
                 real_square_length = pattern_side_cm
+                real_square_width = pattern_side_cm
             else:
                 real_square_area = -1.0
                 real_square_perimeter = -1.0
                 real_square_length = -1.0
+                real_square_width = -1.0
 
             if write_square_row:
                 square_biou = bbox_iou(gt_square.bbox, pred_square.bbox)
@@ -1180,6 +1204,11 @@ def main():
                     0.0,
                     -1.0,
                     0.0,
+                    real_square_width,
+                    -1.0,
+                    0.0,
+                    -1.0,
+                    0.0,
                 ])
 
             # Casamento principal GT <-> pred para puxar metrica de cada folha.
@@ -1199,32 +1228,40 @@ def main():
                     continue
 
                 # Converte de pixel para unidade fisica via regra de tres com quadrado.
-                if real_square_area > 0 and gt_square.area_px > 0:
-                    est_area_a = (gt_comp.area_px / gt_square.area_px) * real_square_area
+                if real_square_area > 0 and gt_square_area_px > 0:
+                    est_area_a = (gt_comp.area_px / gt_square_area_px) * real_square_area
                 else:
                     est_area_a = -1.0
-                if real_square_perimeter > 0 and gt_square.perimeter_px > 0:
-                    est_perim_a = (gt_comp.perimeter_px / gt_square.perimeter_px) * real_square_perimeter
+                if real_square_perimeter > 0 and gt_square_perim_px > 0:
+                    est_perim_a = (gt_comp.perimeter_px / gt_square_perim_px) * real_square_perimeter
                 else:
                     est_perim_a = -1.0
-                if real_square_length > 0 and gt_square.length_px > 0:
-                    est_length_a = (gt_comp.length_px / gt_square.length_px) * real_square_length
+                if real_square_length > 0 and gt_square_side_px > 0:
+                    est_length_a = (gt_comp.length_px / gt_square_side_px) * real_square_length
                 else:
                     est_length_a = -1.0
+                if real_square_width > 0 and gt_square_side_px > 0:
+                    est_width_a = (gt_comp.width_px / gt_square_side_px) * real_square_width
+                else:
+                    est_width_a = -1.0
 
                     # (P) usa objeto predito; (A) usa objeto da anotacao (baseline metodo).
-                if pred_comp is not None and real_square_area > 0 and pred_square.area_px > 0:
-                        est_area_p = (pred_comp.area_px / pred_square.area_px) * real_square_area
+                if pred_comp is not None and real_square_area > 0 and pred_square_area_px > 0:
+                        est_area_p = (pred_comp.area_px / pred_square_area_px) * real_square_area
                 else:
                     est_area_p = -1.0
-                if pred_comp is not None and real_square_perimeter > 0 and pred_square.perimeter_px > 0:
-                    est_perim_p = (pred_comp.perimeter_px / pred_square.perimeter_px) * real_square_perimeter
+                if pred_comp is not None and real_square_perimeter > 0 and pred_square_perim_px > 0:
+                    est_perim_p = (pred_comp.perimeter_px / pred_square_perim_px) * real_square_perimeter
                 else:
                     est_perim_p = -1.0
-                if pred_comp is not None and real_square_length > 0 and pred_square.length_px > 0:
-                    est_length_p = (pred_comp.length_px / pred_square.length_px) * real_square_length
+                if pred_comp is not None and real_square_length > 0 and pred_square_side_px > 0:
+                    est_length_p = (pred_comp.length_px / pred_square_side_px) * real_square_length
                 else:
                     est_length_p = -1.0
+                if pred_comp is not None and real_square_width > 0 and pred_square_side_px > 0:
+                    est_width_p = (pred_comp.width_px / pred_square_side_px) * real_square_width
+                else:
+                    est_width_p = -1.0
 
                 # Dados reais vindos do XML para o objeto casado ao GT.
                 xml_match = gt_to_xml.get(gi, None)
@@ -1232,6 +1269,7 @@ def main():
                 real_area = xml_match.real_area if xml_match is not None else -1.0
                 real_perimeter = xml_match.real_perimeter if xml_match is not None else -1.0
                 real_length = xml_match.real_length if xml_match is not None else -1.0
+                real_width = xml_match.real_width if xml_match is not None else -1.0
 
                 # Estrutura final gravada no CSV para auditoria e analise estatistica.
                 row = [
@@ -1257,6 +1295,11 @@ def main():
                     safe_rer(est_length_a, real_length),
                     est_length_p,
                     safe_rer(est_length_p, real_length),
+                    real_width,
+                    est_width_a,
+                    safe_rer(est_width_a, real_width),
+                    est_width_p,
+                    safe_rer(est_width_p, real_width),
                 ]
                 writer.writerow(row)
 

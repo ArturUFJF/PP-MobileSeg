@@ -16,6 +16,7 @@ import os
 import contextlib
 import tempfile
 import random
+import shlex
 from urllib.parse import urlparse, unquote
 
 import yaml
@@ -230,9 +231,13 @@ def get_image_list(image_path):
             with open(image_path, 'r') as f:
                 for line in f:
                     line = line.strip()
-                    if len(line.split()) > 1:
-                        line = line.split()[0]
-                    image_list.append(os.path.join(image_dir, line))
+                    if not line:
+                        continue
+                    items = shlex.split(line)
+                    if not items:
+                        continue
+                    image_list.append(
+                        os.path.join(image_dir, os.path.normpath(items[0])))
     elif os.path.isdir(image_path):
         image_dir = image_path
         for root, dirs, files in os.walk(image_path):

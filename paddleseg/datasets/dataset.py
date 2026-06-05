@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import os
+import shlex
 
 import paddle
 import numpy as np
@@ -42,6 +43,8 @@ class Dataset(paddle.io.Dataset):
         test_path (str, optional): The test dataset file. When mode is 'test', test_path is necessary.
             The annotation file is not necessary in test_path file.
         separator (str, optional): The separator of dataset list. Default: ' '.
+            If file names contain spaces, quote them in the list file, e.g.:
+            "images/bell pepper.jpg" "annotations/bell pepper.png"
         edge (bool, optional): Whether to compute edge while training. Default: False
 
         Examples:
@@ -132,12 +135,15 @@ class Dataset(paddle.io.Dataset):
 
         with open(file_path, 'r') as f:
             for line in f:
-                items = line.strip().split(separator)
+                line = line.strip()
+                if not line:
+                    continue
+                items = shlex.split(line)
                 if len(items) != 2:
                     if self.mode == 'train' or self.mode == 'val':
                         raise ValueError(
                             "File list format incorrect! In training or evaluation task it should be"
-                            " image_name{}label_name\\n".format(separator))
+                            " \"image_name\" \"label_name\"\\n or image_name label_name\\n")
                     image_path = os.path.join(self.dataset_root, items[0])
                     label_path = None
                 else:
