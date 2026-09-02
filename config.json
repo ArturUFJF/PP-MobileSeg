@@ -1,10 +1,10 @@
 {
     "image_dir": "data/dimensionamento_foliar_full_oneclass/images",
-    "pred_mask_dir": "output/pp_mobileseg_dimensionamento/pred_artigo",
+    "pred_mask_dir": "output/pp_mobileseg_dimensionamento/oneclass_agressiveohem_leaf_new_fold5/predict_results/pseudo_color_prediction/images",
     "gt_mask_dir": "data/dimensionamento_foliar_full_oneclass/annotations",
     "xml_dir": "data/dimensionamento_foliar_full_oneclass/xml",
     "xml_coord_mode": "auto",
-    "results_path": "output/metrics_estimation/sota",
+    "results_path": "output/metrics_estimation/sota5",
     "class_ids": {
         "background": 0,
         "leaf": 1,

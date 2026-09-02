@@ -180,7 +180,7 @@ class PPMobileSeg(nn.Layer):
     
     #     return [coef_ce * seg_loss, coef_mse * area_loss]
     
-    #MODELO COM LOSS L1
+    #MODELO COM LOSS L1 ou LOSS L2
     def loss_computation(self, logits_list, losses, data):
         #Perda da segmentação
         seg_logits, area_logits = logits_list

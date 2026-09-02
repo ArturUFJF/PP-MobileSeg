@@ -10,6 +10,7 @@ from typing import Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
+import time
 
 """
 Script de estimacao de metricas fisicas (area, perimetro e comprimento)
@@ -44,6 +45,7 @@ class Component:
 class XmlLeafInfo:
     leaf_index: int
     mask: np.ndarray
+    bbox: Tuple[int, int, int, int]
     real_area: float
     real_perimeter: float
     real_length: float
@@ -58,6 +60,39 @@ class XmlPatternInfo:
     real_length: float
     real_width: float
     pattern_side_cm: Optional[float]
+
+
+def parse_xml_reference_values(xml_path: Path) -> Tuple[Optional[float], Optional[float]]:
+    """Lê os valores globais do XML usados no CSV.
+
+    Retorna:
+    - capture-distance
+    - pattern-side
+    """
+    if not xml_path.exists():
+        return None, None
+
+    tree = ET.parse(str(xml_path))
+    root = tree.getroot()
+
+    dist_node = root.find("capture-distance")
+    pattern_side_node = root.find("pattern-side")
+
+    dist_cm = None
+    if dist_node is not None and dist_node.text is not None:
+        try:
+            dist_cm = float(dist_node.text)
+        except ValueError:
+            dist_cm = None
+
+    pattern_side_cm = None
+    if pattern_side_node is not None and pattern_side_node.text is not None:
+        try:
+            pattern_side_cm = float(pattern_side_node.text)
+        except ValueError:
+            pattern_side_cm = None
+
+    return dist_cm, pattern_side_cm
 
 
 def parse_args():
@@ -139,7 +174,16 @@ def load_mask(path: Path, class_colors_rgb: Optional[List[List[int]]] = None) ->
     raise ValueError(f"Unsupported mask format for {path}: shape={mask.shape}")
 
 
-def estimate_length_width_by_pca(mask_bool: np.ndarray) -> Tuple[float, float]:
+def _crop_mask(mask_bool: np.ndarray, bbox: Tuple[int, int, int, int]) -> np.ndarray:
+    """Recorta a máscara para a caixa delimitadora fornecida."""
+    x, y, w, h = bbox
+    return mask_bool[y:y + h, x:x + w]
+
+
+def estimate_length_width_by_pca(
+    mask_bool: np.ndarray,
+    bbox: Optional[Tuple[int, int, int, int]] = None,
+) -> Tuple[float, float]:
     """
     Estima comprimento e largura em pixels via PCA da folha.
 
@@ -149,6 +193,9 @@ def estimate_length_width_by_pca(mask_bool: np.ndarray) -> Tuple[float, float]:
     3) Rotaciona a folha para o sistema principal.
     4) Mede a caixa envolvente alinhada aos eixos principais.
     """
+    if bbox is not None:
+        mask_bool = _crop_mask(mask_bool, bbox)
+
     ys, xs = np.where(mask_bool)
     if len(xs) == 0:
         return 0.0, 0.0
@@ -198,7 +245,8 @@ def connected_components(mask: np.ndarray, class_id: int, min_px: int) -> List[C
         h = int(stats[comp_id, cv2.CC_STAT_HEIGHT])
 
         comp_mask = labels == comp_id
-        comp_u8 = comp_mask.astype(np.uint8)
+        comp_crop = _crop_mask(comp_mask, (x, y, w, h))
+        comp_u8 = comp_crop.astype(np.uint8)
         # Extrai contornos para calcular perimetro e comprimento.
         contours, _ = cv2.findContours(comp_u8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
@@ -209,7 +257,7 @@ def connected_components(mask: np.ndarray, class_id: int, min_px: int) -> List[C
             perimeter += float(cv2.arcLength(cnt, True))
 
         area = contour_area if contour_area > 0 else area_stat
-        length, width = estimate_length_width_by_pca(comp_mask)
+        length, width = estimate_length_width_by_pca(comp_mask, (x, y, w, h))
 
         cx, cy = centroids[comp_id]
         comps.append(
@@ -248,7 +296,8 @@ def connected_components_all(mask: np.ndarray, min_px: int, background_id: int =
         h = int(stats[comp_id, cv2.CC_STAT_HEIGHT])
 
         comp_mask = labels == comp_id
-        comp_u8 = comp_mask.astype(np.uint8)
+        comp_crop = _crop_mask(comp_mask, (x, y, w, h))
+        comp_u8 = comp_crop.astype(np.uint8)
         contours, _ = cv2.findContours(comp_u8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
         perimeter = 0.0
@@ -258,7 +307,7 @@ def connected_components_all(mask: np.ndarray, min_px: int, background_id: int =
             perimeter += float(cv2.arcLength(cnt, True))
 
         area = contour_area if contour_area > 0 else area_stat
-        length, width = estimate_length_width_by_pca(comp_mask)
+        length, width = estimate_length_width_by_pca(comp_mask, (x, y, w, h))
 
         cx, cy = centroids[comp_id]
         comps.append(
@@ -295,7 +344,8 @@ def component_from_binary_mask(mask_bool: np.ndarray) -> Optional[Component]:
     centroid = (float(xs.mean()), float(ys.mean()))
 
     # Extrai forma para perimetro/comprimento, igual ao fluxo normal.
-    contours, _ = cv2.findContours(comp_u8, cv2.RETR_EXTERNAL,
+    comp_crop = _crop_mask(mask_bool, bbox)
+    contours, _ = cv2.findContours(comp_crop.astype(np.uint8), cv2.RETR_EXTERNAL,
                                    cv2.CHAIN_APPROX_SIMPLE)
     perimeter = 0.0
     contour_area = 0.0
@@ -304,7 +354,7 @@ def component_from_binary_mask(mask_bool: np.ndarray) -> Optional[Component]:
         perimeter += float(cv2.arcLength(cnt, True))
 
     area = contour_area if contour_area > 0 else float(comp_u8.sum())
-    length, width = estimate_length_width_by_pca(mask_bool)
+    length, width = estimate_length_width_by_pca(mask_bool, bbox)
 
     return Component(
         comp_id=1,
@@ -336,8 +386,27 @@ def bbox_iou(a: Tuple[int, int, int, int], b: Tuple[int, int, int, int]) -> floa
     return inter / union if union > 0 else 0.0
 
 
-def mask_iou(a: np.ndarray, b: np.ndarray) -> float:
-    """Calcula IoU entre duas mascaras binarias."""
+def mask_iou(
+    a: np.ndarray,
+    b: np.ndarray,
+    a_bbox: Optional[Tuple[int, int, int, int]] = None,
+    b_bbox: Optional[Tuple[int, int, int, int]] = None,
+) -> float:
+    """Calcula IoU entre duas mascaras binarias, recortando por bbox quando possivel."""
+    if a_bbox is not None and b_bbox is not None:
+        ax, ay, aw, ah = a_bbox
+        bx, by, bw, bh = b_bbox
+        ix1, iy1 = max(ax, bx), max(ay, by)
+        ix2, iy2 = min(ax + aw, bx + bw), min(ay + ah, by + bh)
+        if ix2 <= ix1 or iy2 <= iy1:
+            return 0.0
+
+        a_slice = a[iy1:iy2, ix1:ix2]
+        b_slice = b[iy1:iy2, ix1:ix2]
+        inter = float(np.logical_and(a_slice, b_slice).sum())
+        union = float(np.logical_or(a_slice, b_slice).sum())
+        return inter / union if union > 0 else 0.0
+
     inter = float(np.logical_and(a, b).sum())
     union = float(np.logical_or(a, b).sum())
     return inter / union if union > 0 else 0.0
@@ -354,7 +423,7 @@ def greedy_match(gt_components: List[Component], pred_components: List[Component
     # Monta todos os pares validos GT-pred com seus scores.
     for gi, g in enumerate(gt_components):
         for pi, p in enumerate(pred_components):
-            iou = mask_iou(g.mask, p.mask)
+            iou = mask_iou(g.mask, p.mask, g.bbox, p.bbox)
             if iou <= 0.0:
                 continue
             biou = bbox_iou(g.bbox, p.bbox)
@@ -416,7 +485,7 @@ def match_with_fallback(
             biou = bbox_iou(gt_comp.bbox, pred_comp.bbox)
             if biou > best_bbox_iou:
                 best_bbox_iou = biou
-                best_bbox_mask_iou = mask_iou(gt_comp.mask, pred_comp.mask)
+                best_bbox_mask_iou = mask_iou(gt_comp.mask, pred_comp.mask, gt_comp.bbox, pred_comp.bbox)
                 best_by_bbox = (pi, pred_comp)
 
         if best_by_bbox is not None and best_bbox_iou > 0.0:
@@ -438,7 +507,7 @@ def match_with_fallback(
         out[gi] = (
             pi,
             bbox_iou(gt_comp.bbox, pred_comp.bbox),
-            mask_iou(gt_comp.mask, pred_comp.mask),
+            mask_iou(gt_comp.mask, pred_comp.mask, gt_comp.bbox, pred_comp.bbox),
             "centroid",
         )
 
@@ -497,8 +566,7 @@ def parse_xml_leaf_info(xml_path: Path, width: int, height: int,
     tree = ET.parse(str(xml_path))
     root = tree.getroot()
 
-    pattern_side = root.find("pattern-side")
-    pattern_side_cm = float(pattern_side.text) if pattern_side is not None else None
+    _, pattern_side_cm = parse_xml_reference_values(xml_path)
 
     leaves: List[XmlLeafInfo] = []
     # Percorre objetos anotados; so folhas com <dimensions> entram no comparativo final.
@@ -537,6 +605,7 @@ def parse_xml_leaf_info(xml_path: Path, width: int, height: int,
             XmlLeafInfo(
                 leaf_index=leaf_idx,
                 mask=polygon_to_mask(points, width, height),
+                bbox=cv2.boundingRect(np.array(points, dtype=np.int32)),
                 real_area=area,
                 real_perimeter=perimeter,
                 real_length=length,
@@ -565,13 +634,7 @@ def parse_xml_pattern_info(xml_path: Path, width: int, height: int,
     if pattern_node is None:
         return None
 
-    pattern_side_node = root.find("pattern-side")
-    pattern_side_cm = None
-    if pattern_side_node is not None and pattern_side_node.text is not None:
-        try:
-            pattern_side_cm = float(pattern_side_node.text)
-        except ValueError:
-            pattern_side_cm = None
+    _, pattern_side_cm = parse_xml_reference_values(xml_path)
 
     points = get_xml_points(pattern_node, width, height, coord_mode)
     if not points:
@@ -625,7 +688,7 @@ def map_gt_to_xml(
     pairs: List[Tuple[float, int, int]] = []
     for gi, g in enumerate(gt_components):
         for xi, xobj in enumerate(xml_leaves):
-            iou = mask_iou(g.mask, xobj.mask)
+            iou = mask_iou(g.mask, xobj.mask, g.bbox, xobj.bbox)
             if iou <= 0:
                 continue
             pairs.append((iou, gi, xi))
@@ -778,11 +841,20 @@ def get_square_component(
     return None
 
 
-def safe_rer(estimated: float, real: float) -> float:
+def safe_rer(estimated: float, real: float) -> Optional[float]:
     """Calcula erro relativo percentual (RER) com proteção para real <= 0."""
     if real <= 0:
-        return -1.0
+        return 0.0
+    if estimated < 0:
+        return 0.0
     return abs(estimated - real) / real * 100.0
+
+
+def csv_number(value: Optional[float]) -> float:
+    """Converte valores ausentes para 0.0 no CSV."""
+    if value is None:
+        return 0.0
+    return 0.0 if value < 0 else value
 
 
 def square_reference_pixels(
@@ -1066,7 +1138,7 @@ def main():
     with open(out_csv, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow([
-            "Image name", "Leaf index", "GT object index", "Pred object index", "Class",
+            "Image name", "Leaf index", "image-distance", "pattern-side", "GT object index", "Pred object index", "Class",
             "BBox IoU", "Mask IoU",
             "Real area", "Estimated area (A)", "Estimated area RER (A)", "Estimated area (P)", "Estimated area RER (P)",
             "Real perimeter", "Estimated perimeter (A)", "Estimated perimeter RER (A)", "Estimated perimeter (P)", "Estimated perimeter RER (P)",
@@ -1074,13 +1146,19 @@ def main():
             "Real width", "Estimated width (A)", "Estimated width RER (A)", "Estimated width (P)", "Estimated width RER (P)",
         ])
 
+        total_start = time.time()
+        processed = 0
+        total_images = len(gt_files)
+
         for gt_path in gt_files:
+            img_start = time.time()
             # --- Resolucao de arquivos de entrada por imagem ---
             stem = gt_path.stem
             display_name = gt_path.name
             pred_path = pred_by_stem.get(stem)
             if pred_path is None:
-                print(f"[WARN] Missing prediction for {display_name}; skipping.")
+                elapsed = time.time() - img_start
+                print(f"[WARN] Missing prediction for {display_name}; skipping. (t={elapsed:.2f}s)")
                 continue
 
             # --- Leitura e normalizacao de tamanho das mascaras ---
@@ -1101,10 +1179,12 @@ def main():
             # --- Leitura opcional de XML para medidas reais e fallback ---
             xml_leaf_info: List[XmlLeafInfo] = []
             pattern_side_cm: Optional[float] = None
+            image_distance_cm: Optional[float] = None
             gt_to_xml: Dict[int, XmlLeafInfo] = {}
             pattern_info: Optional[XmlPatternInfo] = None
             if xml_dir is not None:
                 xml_path = xml_dir / f"{stem}.xml"
+                image_distance_cm, xml_pattern_side_cm = parse_xml_reference_values(xml_path)
                 if xml_coord_mode == "auto":
                     # Testa dois modos de coordenada e escolhe o melhor por score de match.
                     leaves_w, pattern_w = parse_xml_leaf_info(
@@ -1121,8 +1201,8 @@ def main():
                         pattern_info = parse_xml_pattern_info(
                             xml_path, gt_mask.shape[1], gt_mask.shape[0],
                             "height")
-                        chosen_mode = "height"
-                        chosen_score = score_h
+                        ##chosen_mode = "height"
+                        #chosen_score = score_h
                     else:
                         xml_leaf_info = leaves_w
                         gt_to_xml = map_w
@@ -1130,11 +1210,11 @@ def main():
                         pattern_info = parse_xml_pattern_info(
                             xml_path, gt_mask.shape[1], gt_mask.shape[0],
                             "width")
-                        chosen_mode = "width"
-                        chosen_score = score_w
-                    print(
-                        f"[INFO] {display_name}: xml_coord_mode=auto -> chosen='{chosen_mode}' (match_score={chosen_score:.4f})"
-                    )
+                        #chosen_mode = "width"
+                        #chosen_score = score_w
+                    #print(
+                    #    f"[INFO] {display_name}: xml_coord_mode=auto -> chosen='{chosen_mode}' (match_score={chosen_score:.4f})"
+                    #)
                 else:
                     if xml_coord_mode not in {"width", "height"}:
                         raise ValueError(
@@ -1149,7 +1229,8 @@ def main():
 
             # Detection must be independent from XML: do NOT use XML as fallback.
             if gt_square is None or pred_square is None:
-                print(f"[WARN] Missing square in GT or pred for {display_name}; skipping image (no XML fallback used).")
+                elapsed = time.time() - img_start
+                print(f"[WARN] Missing square in GT or pred for {display_name}; skipping image (no XML fallback used). (t={elapsed:.2f}s)")
                 continue
 
             gt_square_area_px, gt_square_perim_px, gt_square_side_px = square_reference_pixels(gt_square)
@@ -1183,31 +1264,33 @@ def main():
                 square_miou = mask_iou(gt_square.mask, pred_square.mask)
                 writer.writerow([
                     display_name,
-                    -1,
+                    0.0,
+                    csv_number(image_distance_cm),
+                    csv_number(pattern_side_cm),
                     gt_square.comp_id,
                     pred_square.comp_id,
                     "square",
                     square_biou,
                     square_miou,
-                    real_square_area,
-                    -1.0,
+                    csv_number(real_square_area),
                     0.0,
-                    -1.0,
                     0.0,
-                    real_square_perimeter,
-                    -1.0,
                     0.0,
-                    -1.0,
                     0.0,
-                    real_square_length,
-                    -1.0,
+                    csv_number(real_square_perimeter),
                     0.0,
-                    -1.0,
                     0.0,
-                    real_square_width,
-                    -1.0,
                     0.0,
-                    -1.0,
+                    0.0,
+                    csv_number(real_square_length),
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    csv_number(real_square_width),
+                    0.0,
+                    0.0,
+                    0.0,
                     0.0,
                 ])
 
@@ -1275,30 +1358,32 @@ def main():
                 row = [
                     display_name,
                     leaf_index,
+                    csv_number(image_distance_cm),
+                    csv_number(pattern_side_cm),
                     gi,
                     pi,
                     "leaf",
-                    biou,
-                    iou,
-                    real_area,
-                    est_area_a,
+                    csv_number(biou),
+                    csv_number(iou),
+                    csv_number(real_area),
+                    csv_number(est_area_a),
                     safe_rer(est_area_a, real_area),
-                    est_area_p,
+                    csv_number(est_area_p),
                     safe_rer(est_area_p, real_area),
-                    real_perimeter,
-                    est_perim_a,
+                    csv_number(real_perimeter),
+                    csv_number(est_perim_a),
                     safe_rer(est_perim_a, real_perimeter),
-                    est_perim_p,
+                    csv_number(est_perim_p),
                     safe_rer(est_perim_p, real_perimeter),
-                    real_length,
-                    est_length_a,
+                    csv_number(real_length),
+                    csv_number(est_length_a),
                     safe_rer(est_length_a, real_length),
-                    est_length_p,
+                    csv_number(est_length_p),
                     safe_rer(est_length_p, real_length),
-                    real_width,
-                    est_width_a,
+                    csv_number(real_width),
+                    csv_number(est_width_a),
                     safe_rer(est_width_a, real_width),
-                    est_width_p,
+                    csv_number(est_width_p),
                     safe_rer(est_width_p, real_width),
                 ]
                 writer.writerow(row)
@@ -1333,6 +1418,12 @@ def main():
                     overlay_texts=overlay_texts,
                     out_path=results_path / "images" / "matches" / display_name,
                 )
+
+            # Per-image timing summary
+            img_elapsed = time.time() - img_start
+            processed += 1
+            total_elapsed = time.time() - total_start
+            print(f"[INFO] Processed {processed}/{total_images} {display_name} in {img_elapsed:.2f}s (total {total_elapsed/60.0:.2f} min)")
 
     print(f"Done. Results saved to: {out_csv}")
 

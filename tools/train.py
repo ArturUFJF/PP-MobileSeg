@@ -46,7 +46,7 @@ def parse_args():
         help=
         'Number of workers for data loader. Bigger num_workers can speed up data processing.',
         type=int,
-        default=0)
+        default=None)
     parser.add_argument('--do_eval',
                         help='Whether to do evaluation in training.',
                         action='store_true')
@@ -98,7 +98,7 @@ def parse_args():
                         type=int)
     parser.add_argument(
         "--precision",
-        default="fp32",
+        default=None,
         type=str,
         choices=["fp32", "fp16"],
         help=
@@ -106,7 +106,7 @@ def parse_args():
     )
     parser.add_argument(
         "--amp_level",
-        default="O1",
+        default=None,
         type=str,
         choices=["O1", "O2"],
         help=
@@ -206,11 +206,23 @@ def main(args):
         early_stop_min_improvement = early_stop_cfg.get(
             'min_improvement', cfg.dic.get('early_stop_min_improvement', 0.0))
 
+    num_workers = args.num_workers
+    if num_workers is None:
+        num_workers = cfg.dic.get('num_workers', 0)
+
+    precision = args.precision
+    if precision is None:
+        precision = cfg.dic.get('precision', 'fp32')
+
+    amp_level = args.amp_level
+    if amp_level is None:
+        amp_level = cfg.dic.get('amp_level', 'O1')
+
     utils.show_env_info()
     utils.show_cfg_info(cfg)
     utils.set_seed(args.seed)
     utils.set_device(args.device)
-    utils.set_cv2_num_threads(args.num_workers)
+    utils.set_cv2_num_threads(num_workers)
     uniform_output_enabled = cfg.dic.get("uniform_output_enabled", False)
     if uniform_output_enabled:
         if not os.path.exists(effective_save_dir):
@@ -265,14 +277,14 @@ def main(args):
           resume_model=args.resume_model,
                     save_interval=effective_save_interval,
           log_iters=args.log_iters,
-          num_workers=args.num_workers,
+          num_workers=num_workers,
           use_vdl=args.use_vdl,
           use_ema=args.use_ema,
           losses=loss,
                     keep_checkpoint_max=effective_keep_checkpoint_max,
           test_config=cfg.test_config,
-          precision=args.precision,
-          amp_level=args.amp_level,
+          precision=precision,
+          amp_level=amp_level,
           profiler_options=args.profiler_options,
           to_static_training=cfg.to_static_training,
           logger=logger,

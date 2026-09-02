@@ -6,24 +6,27 @@ _base_: '../_base_/lsidbeans.yml'
 # - MSELoss para regressão de área por-pixel
 
 batch_size: 16  # ajuste conforme sua GPU
-num_workers: 12  # ajuste conforme sua CPU
+num_workers: 6  # ajuste conforme sua CPU
 iters: 26500 # por volta de 100 epochs
 
 train_dataset:
-  transforms: #potencialmente ajustar
-    # - type: ResizeStepScaling
-    #   min_scale_factor: 0.5
-    #   max_scale_factor: 1.5
-    #   scale_step_size: 0.125
-    # - type: RandomPaddingCrop
-    #   crop_size: [512, 512]  # ajustado para imagens menores
-    - type: RandomHorizontalFlip
-    - type: RandomVerticalFlip  # útil para folhas
-    #- type: RandomDistort
-    #  brightness_range: 0.25
-    #  contrast_range: 0.25
-    #  saturation_range: 0.25
-    - type: Normalize
+  transforms:
+  - type: RandomHorizontalFlip
+  #  prob: 0.5
+  - type: RandomVerticalFlip
+  #  prob: 0.1
+  #- type: RandomDistort
+  #  brightness_range: 0.07
+  #  contrast_range: 0.07
+  #  saturation_range: 0.07
+  #  brightness_prob: 0.4
+  #  contrast_prob: 0.4
+  #  saturation_prob: 0.4
+  #- type: RandomBlur
+  #  prob: 0.10
+  #- type: RandomNoise
+  #  prob: 0.06
+  - type: Normalize
 
 precision: fp16
 amp_level: O1
@@ -51,7 +54,7 @@ lr_scheduler:
 loss:
   types:
     - type: CrossEntropyLoss
-    - type: L1Loss
+    - type: L2Loss
       reduction: none # para aplicar máscara manualmente
 
   coef: [1.0, 3.0]  # [seg_coef, area_coef]
@@ -71,7 +74,7 @@ model:
 checkpoint:
   save_dir: output/lsidbeans
   save_interval: 500
-  keep_checkpoint_max: 10
+  keep_checkpoint_max: 4
 
 log_config:
   name: pp_mobileseg_lsidbeans
@@ -79,8 +82,13 @@ log_config:
 
 # Configurações de validação
 val_dataset_config:
-  val_interval: 200
+  val_interval: 500
 
-#implementar early stopping adequado depois
+test_config:
+  compute_area_rer: True
+  eval_num_workers: 1
 
-
+#Early Stopping
+early_stop:
+  intervals: 8
+  min_improvement: 0.5  # porcentagem mínima de melhora relativa no RER (ex.: 0.5 = 0.5%)

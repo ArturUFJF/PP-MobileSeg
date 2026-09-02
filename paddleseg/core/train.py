@@ -65,6 +65,32 @@ def loss_computation(logits_list, labels, edges, losses):
     return loss_list
 
 
+def _calc_rer_scores(avg_RER_leaf, std_RER_leaf, avg_RER_marker,
+                     std_RER_marker):
+    try:
+        total_rer = float(avg_RER_leaf if not np.isnan(avg_RER_leaf) else 0.0) + float(avg_RER_marker if not np.isnan(avg_RER_marker) else 0.0) + float(std_RER_leaf if not np.isnan(std_RER_leaf) else 0.0) + float(std_RER_marker if not np.isnan(std_RER_marker) else 0.0)
+        leaf_rer = float(avg_RER_leaf if not np.isnan(avg_RER_leaf) else 0.0) + float(std_RER_leaf if not np.isnan(std_RER_leaf) else 0.0)
+    except Exception:
+        total_rer = float('inf')
+        leaf_rer = float('inf')
+    return total_rer, leaf_rer
+
+
+def _relative_improvement_percent(previous_best, current_value):
+    """Return the relative improvement in percent for a lower-is-better metric."""
+    if not np.isfinite(current_value):
+        return float('-inf')
+    if not np.isfinite(previous_best):
+        return float('inf')
+    if previous_best <= 0:
+        return float('inf') if current_value < previous_best else 0.0
+    return max(0.0, (previous_best - current_value) / abs(previous_best) * 100.0)
+
+
+def _meets_min_relative_improvement(previous_best, current_value, min_improvement_percent):
+    return _relative_improvement_percent(previous_best, current_value) >= min_improvement_percent
+
+
 def train(model,
           train_dataset,
           val_dataset=None,
@@ -103,7 +129,7 @@ def train(model,
         iters (int, optional): How may iters to train the model. Defualt: 10000.
         batch_size (int, optional): Mini batch size of one gpu or cpu. Default: 2.
         early_stop_intervals (int, optional): Number of evaluation intervals without improvement before stopping.
-        early_stop_min_improvement (float, optional): Minimum absolute improvement to reset early stop counter. Default: 0.0.
+        early_stop_min_improvement (float, optional): Minimum relative improvement in percent to reset early stop counter. Default: 0.0.
         resume_model (str, optional): The path of resume model.
         save_interval (int, optional): How many iters to save a model snapshot once during training. Default: 1000.
         log_iters (int, optional): Display logging information at every log_iters. Default: 10.
@@ -218,11 +244,14 @@ def train(model,
     best_mean_iou = -1.0
     best_ema_mean_iou = -1.0
     best_model_iter = -1
+    best_ema_model_iter = -1
     # Best total relative error (leaf + marker). Initialized large so first eval wins.
     best_total_rer = float('inf')
     # Best leaf relative error.
     best_leaf_rer = float('inf')
     best_leaf_model_iter = -1
+    best_ema_total_rer = float('inf')
+    best_ema_leaf_rer = float('inf')
     reader_cost_averager = TimeAverager()
     batch_cost_averager = TimeAverager()
     save_models = deque()
@@ -502,12 +531,9 @@ def train(model,
                                              done_flag=iter == iters)
 
                     # Select best model by smallest total relative error (leaf + marker averages)
-                    try:
-                        total_rer = float(avg_RER_leaf if not np.isnan(avg_RER_leaf) else 0.0) + float(avg_RER_marker if not np.isnan(avg_RER_marker) else 0.0) + float(std_RER_leaf if not np.isnan(std_RER_leaf) else 0.0) + float(std_RER_marker if not np.isnan(std_RER_marker) else 0.0)
-                        leaf_rer = float(avg_RER_leaf if not np.isnan(avg_RER_leaf) else 0.0) + float(std_RER_leaf if not np.isnan(std_RER_leaf) else 0.0)
-                    except Exception:
-                        total_rer = float('inf')
-                        leaf_rer = float('inf')
+                    total_rer, leaf_rer = _calc_rer_scores(
+                        avg_RER_leaf, std_RER_leaf, avg_RER_marker,
+                        std_RER_marker)
 
                     if 'best_total_rer' not in locals():
                         best_total_rer = float('inf')
@@ -579,7 +605,9 @@ def train(model,
                                                      states_dict,
                                                      done_flag=iter == iters)
 
-                        if total_rer < (best_total_rer - early_stop_min_improvement):
+                        if _meets_min_relative_improvement(best_total_rer,
+                                                            total_rer,
+                                                            early_stop_min_improvement):
                             stop_count = 0
                             best_total_rer = total_rer
                             best_model_iter = iter
@@ -607,7 +635,7 @@ def train(model,
                             stop_status = True
                             logger.info(
                                 'Early stopping at iter {}. The best total RER (leaf+marker) is {:.4f}%. '
-                                'min_improvement={:.6f}.'
+                                'min_relative_improvement={:.6f}%.'
                                 .format(iter, best_total_rer,
                                         early_stop_min_improvement))
                             logger.info(
@@ -622,21 +650,34 @@ def train(model,
                                 .format(best_leaf_rer, best_leaf_model_iter))
 
                     if use_ema:
+                        ema_total_rer, ema_leaf_rer = _calc_rer_scores(
+                            ema_avg_RER_leaf, ema_std_RER_leaf,
+                            ema_avg_RER_marker, ema_std_RER_marker)
                         ema_states_dict = {
                             'mIoU': ema_mean_iou,
                             'Acc': ema_acc,
-                            'iter': iter
+                            'iter': iter,
+                            'avg_RER_leaf': ema_avg_RER_leaf,
+                            'std_RER_leaf': ema_std_RER_leaf,
+                            'avg_RER_marker': ema_avg_RER_marker,
+                            'std_RER_marker': ema_std_RER_marker,
+                            'total_RER': ema_total_rer,
+                            'leaf_RER': ema_leaf_rer,
                         }
                         paddle.save(
                             ema_states_dict,
                             os.path.join(current_save_dir,
                                          'ema_model.pdstates'))
 
-                        if ema_mean_iou > best_ema_mean_iou:
-                            best_ema_mean_iou = ema_mean_iou
+                        if _meets_min_relative_improvement(
+                            best_ema_total_rer, ema_total_rer,
+                            early_stop_min_improvement):
+                            best_ema_total_rer = ema_total_rer
+                            best_ema_leaf_rer = ema_leaf_rer
                             best_ema_model_iter = iter
                             best_ema_model_dir = os.path.join(
                                 save_dir, "ema_best_model")
+                            os.makedirs(best_ema_model_dir, exist_ok=True)
                             paddle.save(
                                 ema_model.state_dict(),
                                 os.path.join(best_ema_model_dir,
@@ -657,8 +698,11 @@ def train(model,
                                                      done_flag=iter == iters,
                                                      ema=use_ema)
                         logger.info(
-                            '[EVAL] The EMA model with the best validation mIoU ({:.4f}) was saved at iter {}.'
-                            .format(best_ema_mean_iou, best_ema_model_iter))
+                            '[EVAL] The EMA model with the best validation total RER ({:.4f}%%) was saved at iter {}.'
+                            .format(best_ema_total_rer, best_ema_model_iter))
+                        logger.info(
+                            '[EVAL] The EMA model with the best validation leaf RER ({:.4f}%%) was saved at iter {}.'
+                            .format(best_ema_leaf_rer, best_ema_model_iter))
 
                     if use_vdl:
                         log_writer.add_scalar('Evaluate/mIoU', mean_iou, iter)
@@ -669,6 +713,10 @@ def train(model,
                                                   ema_mean_iou, iter)
                             log_writer.add_scalar('Evaluate/Ema_Acc', ema_acc,
                                                   iter)
+                            log_writer.add_scalar('Evaluate/Ema_total_RER',
+                                                  ema_total_rer, iter)
+                            log_writer.add_scalar('Evaluate/Ema_leaf_RER',
+                                                  ema_leaf_rer, iter)
 
                     if stop_status:
                         break

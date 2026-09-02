@@ -25,6 +25,7 @@ from .ohem_cross_entropy_loss import OhemCrossEntropyLoss
 from .decoupledsegnet_relax_boundary_loss import RelaxBoundaryLoss
 from .ohem_edge_attention_loss import OhemEdgeAttentionLoss
 from .l1_loss import L1Loss
+from .l2_loss import L2Loss
 from .mean_square_error_loss import MSELoss
 from .focal_loss import FocalLoss
 from .kl_loss import KLLoss
